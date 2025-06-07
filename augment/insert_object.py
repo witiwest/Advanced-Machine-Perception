@@ -1,6 +1,7 @@
 import numpy as np
 import pickle
 import random
+import os
 
 def load_point_cloud(bin_path):
     return np.fromfile(bin_path, dtype=np.float32).reshape(-1, 4)
@@ -47,19 +48,27 @@ def insert_object_into_point_cloud(point_cloud, label_lines, object_dict_path, o
     return new_point_cloud, label_lines
 
 
-# Example usage:
-lidar_path = '/home/taalbers/final_assignment/data/view_of_delft/lidar/training/velodyne/00000.bin'
-label_path = '/home/taalbers/final_assignment/data/view_of_delft/lidar/training/label_2/00000.txt'
-object_dict_path = '/home/taalbers/final_assignment/object_dict.pkl'
+_HOME = os.path.expanduser('~')
+lidar_path = os.path.join(_HOME, 'final_assignment', 'data', 'view_of_delft', 'lidar', 'training', 'velodyne', '00000.bin')
+label_path = os.path.join(_HOME, 'final_assignment', 'data', 'view_of_delft', 'lidar', 'training', 'label_2', '00000.txt')
+object_dict_path = os.path.join(_HOME, 'final_assignment', 'object_dict.pkl')
+
+# # Example usage:
+# lidar_path = '/home/taalbers/final_assignment/data/view_of_delft/lidar/training/velodyne/00000.bin'
+# label_path = '/home/taalbers/final_assignment/data/view_of_delft/lidar/training/label_2/00000.txt'
+# object_dict_path = '/home/taalbers/final_assignment/object_dict.pkl'
 
 point_cloud = load_point_cloud(lidar_path)
 label_lines = load_labels(label_path)
 
 new_pc, new_labels = insert_object_into_point_cloud(point_cloud, label_lines, object_dict_path, 'Cyclist')
 
-# Save new files
-save_point_cloud('/home/taalbers/00000_augmented.bin', new_pc)
-save_labels('/home/taalbers/00000_augmented.txt', new_labels)
+save_point_cloud(os.path.join(_HOME, '00000_augmented.bin'), new_pc)
+save_labels(os.path.join(_HOME, '00000_augmented.txt'), new_labels)
+
+# # Save new files
+# save_point_cloud('/home/taalbers/00000_augmented.bin', new_pc)
+# save_labels('/home/taalbers/00000_augmented.txt', new_labels)
 
 import matplotlib.pyplot as plt
 
