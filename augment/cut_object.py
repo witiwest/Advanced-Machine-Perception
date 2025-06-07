@@ -1,6 +1,6 @@
 # IMPORT MODULES
 import numpy as np
-from scipy.spatial.transform import Rotation as R
+# from scipy.spatial.transform import Rotation as R
 import struct
 import os
 import glob
@@ -87,8 +87,22 @@ def cam_yaw_to_velo_quaternion(rotation_y_cam):
     Returns: quaternion [qx, qy, qz, qw] for rotating in velodyne frame.
     """
     yaw_velo = -(rotation_y_cam + np.pi/2)
-    r = R.from_euler('z', yaw_velo)   
-    return r.as_quat()  
+    return euler_z_to_quaternion(yaw_velo) 
+
+# Math helper functions
+def euler_z_to_quaternion(yaw):
+    # Only for rotation around Z axis (as in your case)
+    qw = np.cos(yaw / 2)
+    qz = np.sin(yaw / 2)
+    return np.array([0.0, 0.0, qz, qw])
+
+def quaternion_to_rot_matrix(q):
+    x, y, z, w = q
+    return np.array([
+        [1 - 2*(y**2 + z**2), 2*(x*y - z*w),     2*(x*z + y*w)],
+        [2*(x*y + z*w),       1 - 2*(x**2 + z**2), 2*(y*z - x*w)],
+        [2*(x*z - y*w),       2*(y*z + x*w),     1 - 2*(x**2 + y**2)]
+    ])
 
 def build_velo_annotation(raw_ann, Tr_cam_to_velo):
     """
@@ -155,9 +169,8 @@ def cut_bounding_box(point_cloud, annotation, annotation_move=[0, 0, 0]):
     width = annotation['width']
     height = annotation['height']
 
-    r = R.from_quat([Q1, Q2, Q3, Q4])
-    
-    rot_matrix = r.as_matrix()
+    q = [annotation['rotation']['x'], annotation['rotation']['y'], annotation['rotation']['z'], annotation['rotation']['w']]
+    rot_matrix = quaternion_to_rot_matrix(q)
 
     bbox = point_cloud[
         rot_matrix[0][0] * point_cloud[:, 0] + rot_matrix[1][0] * point_cloud[:, 1] + rot_matrix[2][
@@ -227,9 +240,16 @@ def run(training_data, annotations, annotation_move=[0, 0, 0]):
 
 
 # DATA DIRECTORIES
-label_data_dir = '/home/taalbers/final_assignment/view_of_delft/lidar/training/label_2'
-lidar_data_dir  = '/home/taalbers/final_assignment/view_of_delft/lidar/training/velodyne'
-calib_data_dir  = '/home/taalbers/final_assignment/view_of_delft/lidar/training/calib'   
+_HOME = os.path.expanduser('~')
+_BASE = os.path.join(_HOME, 'final_assignment', 'view_of_delft', 'lidar', 'training')
+
+label_data_dir = os.path.join(_BASE, 'label_2')
+lidar_data_dir = os.path.join(_BASE, 'velodyne')
+calib_data_dir = os.path.join(_BASE, 'calib')
+
+# label_data_dir = '/home/taalbers/final_assignment/view_of_delft/lidar/training/label_2'
+# lidar_data_dir  = '/home/taalbers/final_assignment/view_of_delft/lidar/training/velodyne'
+# calib_data_dir  = '/home/taalbers/final_assignment/view_of_delft/lidar/training/calib'  
 
 # SELECT 100 RANDOM POINT CLOUDS TO EXTRACT OBJECTS FROM
 all_txt = sorted(glob.glob(os.path.join(label_data_dir, '*.txt')))
