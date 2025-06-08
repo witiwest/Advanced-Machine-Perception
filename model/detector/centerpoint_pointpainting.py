@@ -22,9 +22,10 @@ from common_src.model.middle_encoders import PointPillarsScatter
 from common_src.model.backbones import SECOND
 from common_src.model.necks import SECONDFPN
 from common_src.model.heads import CenterHead
+from common_src.model.point_painting import PointPainting
 
 
-class CenterPoint(L.LightningModule):
+class CenterPointPainting(L.LightningModule):
     def __init__(self, config):
         super().__init__()
         self.save_hyperparameters()
@@ -41,6 +42,7 @@ class CenterPoint(L.LightningModule):
         backbone_config = config.get("backbone", None)
         neck_config = config.get("neck", None)
         head_config = config.get("head", None)
+        point_painting_config = config.get("point_painting", None)
 
         self.voxel_layer = Voxelization(**voxel_layer_config)
         self.voxel_encoder = PillarFeatureNet(**voxel_encoder_config)
@@ -48,6 +50,8 @@ class CenterPoint(L.LightningModule):
         self.backbone = SECOND(**backbone_config)
         self.neck = SECONDFPN(**neck_config)
         self.head = CenterHead(**head_config)
+
+        self.point_painting = PointPainting(**point_painting_config)
 
         self.optimizer_config = config.get("optimizer", None)
 
@@ -82,9 +86,13 @@ class CenterPoint(L.LightningModule):
 
         return voxel_dict
 
-    def _model_forward(self, pts_data):
+    def _model_forward(self, pts_data, image_data, transforms):
 
-        voxel_dict = self.voxelize(pts_data)
+        painted_points = self.point_painting.paint_points(
+            pts_data, image_data, transforms
+        )
+
+        voxel_dict = self.voxelize(painted_points)
 
         voxels = voxel_dict["voxels"]
         num_points = voxel_dict["num_points"]
@@ -102,8 +110,12 @@ class CenterPoint(L.LightningModule):
         pts_data = batch["pts"]
         gt_label_3d = batch["gt_labels_3d"]
         gt_bboxes_3d = batch["gt_bboxes_3d"]
+        image_data = batch["image"]
+        transforms = batch["transforms"]
 
-        ret_dict = self._model_forward(pts_data)
+        print(f"Point cloud data: {pts_data}")
+
+        ret_dict = self._model_forward(pts_data, image_data, transforms)
         loss_input = [gt_bboxes_3d, gt_label_3d, ret_dict]
 
         losses = self.head.loss(*loss_input)
@@ -135,7 +147,10 @@ class CenterPoint(L.LightningModule):
         gt_label_3d = batch["gt_labels_3d"]
         gt_bboxes_3d = batch["gt_bboxes_3d"]
 
-        ret_dict = self._model_forward(pts_data)
+        image_data = batch["image"]
+        transforms = batch["transforms"][0]
+
+        ret_dict = self._model_forward(pts_data, image_data, transforms)
         loss_input = [gt_bboxes_3d, gt_label_3d, ret_dict]
 
         bbox_list = self.head.get_bboxes(ret_dict, img_metas=metas)

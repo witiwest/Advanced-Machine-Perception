@@ -1,4 +1,4 @@
-name: centerpoint
+name: centerpoint_pointpainting
 exp_id: ${exp_id}
 
 data_root: ${data_root}
@@ -12,6 +12,9 @@ pts_voxel_layer:
   voxel_size: ${model.voxel_size}
   point_cloud_range: ${model.point_cloud_range}
   max_voxels: [16000, 40000]
+
+point_painting:
+  crop_point_cloud: False 
 
 voxel_encoder:
   in_channels: 9
