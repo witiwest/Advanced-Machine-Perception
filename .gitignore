@@ -1,1 +1,5 @@
+<<<<<<< HEAD
 **/__pycache__
+=======
+.pyc
+>>>>>>> 7e116e5 (Add gitignore)
