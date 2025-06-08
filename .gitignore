@@ -1,5 +1,10 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 **/__pycache__
 =======
 .pyc
 >>>>>>> 7e116e5 (Add gitignore)
+=======
+*.pyc
+__pycache__/
+>>>>>>> 645f153 (Add file types to gitignore)
