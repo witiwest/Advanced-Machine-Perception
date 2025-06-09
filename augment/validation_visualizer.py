@@ -83,7 +83,7 @@ def create_validation_plot(
     plot_title = f"Validation for Frame: {image_path.stem} | Pasted: {obj_class}"
     fig.suptitle(plot_title, fontsize=16)
 
-    # --- Plot 1: Bird's-Eye-View (BEV) ---
+    # Plot 1: Bird's-Eye-View (BEV)
     ax_bev.scatter(original_xyz[:, 0], original_xyz[:, 1], s=1.5, c="royalblue", label="Original Scene")
     if inserted_xyz.shape[0] > 0:
         ax_bev.scatter(inserted_xyz[:, 0], inserted_xyz[:, 1], s=15, c="red", label="Inserted Object", zorder=3)
@@ -100,7 +100,7 @@ def create_validation_plot(
     ax_bev.legend()
     ax_bev.grid(True, linestyle='--', alpha=0.6)
 
-    # --- Plot 2: Camera Overlay ---
+    # Plot 2: Camera Overlay
     img = np.array(Image.open(image_path).convert("RGB"))
     h, w = img.shape[:2]
     ax_cam.imshow(img)
@@ -117,7 +117,7 @@ def create_validation_plot(
         corners_img = project_velo_to_image(corners_velo, calib)
         _draw_3d_bbox(ax_cam, corners_img, color="lime", lw=1.5)
 
-    # --- Save the combined figure ---
+    # Save the combined figure
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     save_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path, dpi=150)

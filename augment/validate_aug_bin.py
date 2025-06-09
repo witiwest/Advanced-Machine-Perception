@@ -12,25 +12,25 @@ def validate_point_painting_format(file_path: str):
     print(f"Validating file: {Path(file_path).name}")
 
     try:
-        # 1. Load the binary point cloud data
+        # Load the binary point cloud data
         pc = np.fromfile(file_path, dtype=np.float32)
         
-        # 2. Check for correct dimensionality (must be 9)
+        # Check for correct dimensionality (must be 9)
         assert pc.size % 9 == 0, f"File size is not divisible by 9. Something is wrong with the data format."
         pc = pc.reshape(-1, 9)
         print(f"PASSED: Point cloud has correct shape: {pc.shape}")
 
-        # 3. Check data type
+        # Check data type
         assert pc.dtype == np.float32, f"Data type is not float32. Found {pc.dtype}."
         print(f"PASSED: Data type is correct: {pc.dtype}")
 
-        # 4. Check that the semantic channels (last 5) are normalized (sum to 1.0)
+        # Check that the semantic channels (last 5) are normalized (sum to 1.0)
         semantic_channels = pc[:, 4:]
         sums = np.sum(semantic_channels, axis=1)
         assert np.allclose(sums, 1.0), "Semantic channels are not normalized (sum is not 1.0 for all points)."
         print(f"PASSED: Semantic channels are correctly normalized.")
 
-        # 5. Check for data integrity: a point is either "unknown" or an object, not a mix.
+        # Check for data integrity: a point is either "unknown" or an object, not a mix.
         is_unknown = semantic_channels[:, 0] == 1.0
         is_object = semantic_channels[:, 0] == 0.0
         object_class_sums = np.sum(semantic_channels[is_object, 1:], axis=1)
@@ -69,6 +69,6 @@ if __name__ == '__main__':
             fail_count += 1
         print("-" * 50)
         
-    print("\n--- BATCH VALIDATION COMPLETE ---")
+    print("\nBATCH VALIDATION COMPLETE")
     print(f"Successfully validated: {success_count} file(s)")
     print(f"Failed validation:      {fail_count} file(s)")
