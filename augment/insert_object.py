@@ -73,6 +73,23 @@ def fit_global_ground_plane_ransac(pc: np.ndarray, iters=100, eps=0.1):
 
     return best_plane
 
+def apply_noise_to_object(points, rng, jitter_std=0.02, dropout_prob=0.05):
+    """
+    Applies random noise to the points of a donor object.
+    """
+    # Point Jitter: add small random values to each point's XYZ coordinates.
+    # We create noise with the same shape as the XYZ data and a given std. dev.
+    jitter = rng.normal(scale=jitter_std, size=(points.shape[0], 3))
+    points[:, :3] += jitter # Add the noise to the X, Y, Z columns
+
+    # Point Dropout: randomly remove a small percentage of points.
+    if dropout_prob > 0:
+        # Create a random mask. Points are kept if their random value is > dropout_prob.
+        keep_mask = rng.random(size=len(points)) > dropout_prob
+        points = points[keep_mask]
+
+    return points
+
 def _corners_2d(b: Box):
     """ Helper for SAT: gets the 2D corners of a bounding box. """
     dx, dy = b.l / 2, b.w / 2
@@ -199,63 +216,86 @@ def insert_object(pc, labels, obj_db, cls, scene_boxes, calib_dict, rng, global_
     if not donors:
         return pc, labels, scene_boxes, False
 
-    # Fixed object for debuggin for now
-    ent = donors[2]
-    pts = ent["points"].copy()
-    label = ent["label"]
-    h, w, l = map(float, label.split()[8:11])
-    z_min_donor = pts[:, 2].min()
+    # Main loop to try multiple random poses
+    for _ in range(max_trials):
+        
+        # Random object selection for variety 
+        ent = rng.choice(donors)
+        pts = ent["points"].copy()
 
-    # Use the fixed debugging pose
-    x, y, yaw = 15.0, 0.0, 0.0
-    # For random placement:
-    # x, y = sample_range_angle(rng)
-    # yaw  = rng.uniform(-np.pi, np.pi)
+        # Apply noise for robustness
+        pts = apply_noise_to_object(pts, rng)
 
-    # Calculate the Z-height directly from the global plane equation
-    a, b, c, d = global_plane_params
-    # Check for a near-zero 'c' to avoid division by zero if the plane is vertical
-    if abs(c) < 1e-6:
-        return pc, labels, scene_boxes, False
+        if len(pts) == 0: 
+            continue # All points were dropped, try again
 
-    global_ground_z = -(a * x + b * y + d) / c
+        label = ent["label"]
+        h, w, l = map(float, label.split()[8:11])
+        z_min_donor = pts[:, 2].min()
 
-    # Final object position
-    z = global_ground_z + (h / 2) - z_min_donor
-    box = Box(x, y, z, l, w, h, yaw)
+        x, y = sample_range_angle(rng)
+        yaw  = rng.uniform(-np.pi, np.pi)
 
-    # --- 2. VALIDATION CHECKS (Unchanged) ---
-    if not is_placement_realistic(box, cls, pc):                    return pc, labels, scene_boxes, False
-    if any(boxes_overlap(box, b) for b in scene_boxes):             return pc, labels, scene_boxes, False
-    points_in_box_indices = get_points_in_box(pc, box)
-    if len(points_in_box_indices) > 5:                              return pc, labels, scene_boxes, False
-    if not is_line_of_sight_clear(pc, np.array([box.x, y, z])):      return pc, labels, scene_boxes, False
+        # Calculate the Z-height directly from the global plane equation
+        a, b, c, d = global_plane_params
+        # Check for a near-zero 'c' to avoid division by zero if the plane is vertical
+        if abs(c) < 1e-6:
+            continue
 
-    # Hole cutting an paste object
-    pc = np.delete(pc, points_in_box_indices, axis=0)
+        global_ground_z = -(a * x + b * y + d) / c
 
-    Rz = np.array([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw),  np.cos(yaw), 0], [0, 0, 1]], np.float32)
-    centroid_xy = np.mean(pts[:, :2], axis=0)
-    pts[:, 0] -= centroid_xy[0]
-    pts[:, 1] -= centroid_xy[1]
-    pts[:, 2] -= z_min_donor
-    pts[:, :3] = (Rz @ pts[:, :3].T).T
-    pts[:, :3] += np.array([x, y, global_ground_z])
+        # Final object position
+        z = global_ground_z + (h / 2) - z_min_donor
+        box = Box(x, y, z, l, w, h, yaw)
 
-    # Finalize point cloud and labels
-    if pts.shape[1] == 3: pts = np.hstack([pts, 0.5 * np.ones((pts.shape[0], 1), dtype=np.float32)])
-    sem = np.zeros((pts.shape[0], 5), np.float32)
-    sem_idx = {"Car": 1, "Pedestrian": 2, "Cyclist": 3}.get(cls, 4)
-    sem[:, sem_idx] = 1.0
-    if pc.shape[1] == 4:
-        base_sem = np.zeros((pc.shape[0], 5), np.float32); base_sem[:, 0] = 1.0
-        pc = np.hstack([pc, base_sem])
-    pts = np.hstack([pts, sem])
-    pc = np.vstack([pc, pts])
-    labels.append(label)
-    scene_boxes.append(box)
+        # Validation checks
+        if not is_placement_realistic(box, cls, pc):                    
+            continue
+        
+        if any(boxes_overlap(box, b) for b in scene_boxes):             
+            continue
+        
+        points_in_box_indices = get_points_in_box(pc, box)
+        if len(points_in_box_indices) > 5:                              
+            continue
+        
+        if not is_line_of_sight_clear(pc, np.array([box.x, y, z])):      
+            continue
 
-    return pc, labels, scene_boxes, True 
+        # Hole cutting an paste object
+        pc = np.delete(pc, points_in_box_indices, axis=0)
+
+        Rz = np.array([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw),  np.cos(yaw), 0], [0, 0, 1]], np.float32)
+        centroid_xy = np.mean(pts[:, :2], axis=0)
+        pts[:, 0] -= centroid_xy[0]
+        pts[:, 1] -= centroid_xy[1]
+        pts[:, 2] -= z_min_donor
+        pts[:, :3] = (Rz @ pts[:, :3].T).T
+        pts[:, :3] += np.array([x, y, global_ground_z])
+
+        # Finalize point cloud and labels
+        if pts.shape[1] == 3: 
+            pts = np.hstack([pts, 0.5 * np.ones((pts.shape[0], 1), dtype=np.float32)])
+
+        sem = np.zeros((pts.shape[0], 5), np.float32)
+        sem_idx = {"Car": 1, "Pedestrian": 2, "Cyclist": 3}.get(cls, 4)
+        sem[:, sem_idx] = 1.0
+
+        if pc.shape[1] == 4:
+            base_sem = np.zeros((pc.shape[0], 5), np.float32) 
+            base_sem[:, 0] = 1.0
+            pc = np.hstack([pc, base_sem])
+
+        pts = np.hstack([pts, sem])
+        pc = np.vstack([pc, pts])
+        labels.append(label)
+        scene_boxes.append(box)
+
+        # Valid pose was found
+        return pc, labels, scene_boxes, True 
+    
+    # Max trials reached, no success
+    return pc, labels, scene_boxes, False
 
 # main loop 
 if __name__ == "__main__":
@@ -311,6 +351,6 @@ if __name__ == "__main__":
                 obj_class=OBJ_CLASS
             )
         else:
-            print("   - No valid pose found after all trials.")
+            print("No valid pose found after all trials.")
 
     print("\nDone.")
