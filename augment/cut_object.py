@@ -247,13 +247,9 @@ label_data_dir = os.path.join(_BASE, 'label_2')
 lidar_data_dir = os.path.join(_BASE, 'velodyne')
 calib_data_dir = os.path.join(_BASE, 'calib')
 
-# label_data_dir = '/home/taalbers/final_assignment/view_of_delft/lidar/training/label_2'
-# lidar_data_dir  = '/home/taalbers/final_assignment/view_of_delft/lidar/training/velodyne'
-# calib_data_dir  = '/home/taalbers/final_assignment/view_of_delft/lidar/training/calib'  
-
 # SELECT 100 RANDOM POINT CLOUDS TO EXTRACT OBJECTS FROM
 all_txt = sorted(glob.glob(os.path.join(label_data_dir, '*.txt')))
-random_txt = random.sample(all_txt, 100) 
+random_txt = random.sample(all_txt, 500) 
 
 random_bin   = []
 random_calib = []
@@ -289,11 +285,14 @@ for txt_path, calib_path in zip(random_txt, random_calib):
     all_converted_annotations.append(velo_anns)
 
 # OUTER LOOP OVER TRAINNING FRAMES AND INNER LOOP OVER ANNOTATIONS
+INTEREST = {"Car", "Pedestrian", "Cyclist"}
 object_dict = {}
 for i, (pc, raw_anns, velo_ann_list) in enumerate(zip(training_data, [open(p).readlines() for p in random_txt], all_converted_annotations)):
     for j, (raw_line, velo_ann) in enumerate(zip(raw_anns, velo_ann_list)):
         pts_in_box = cut_bounding_box(pc, velo_ann, annotation_move=[0, 0, 0])
         parsed_class = raw_line.strip().split()[0]
+        if parsed_class not in INTEREST:
+            continue
         if len(pts_in_box) == 0:
             continue  # Skip empty boxes
         
