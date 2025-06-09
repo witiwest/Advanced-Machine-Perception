@@ -10,7 +10,7 @@ from validation_visualizer import create_validation_plot, split_cloud
 
 # Some random frames
 FRAMES     = ["00100", "00242", "00376", "00550", "00816", "01100", "01450", "01900", "02300"]
-OBJ_CLASS  = "Pedestrian"                     # Class to paste: "Car", "Pedestrian", "Cyclist"
+OBJ_CLASS  = "Cyclist"                     # Class to paste: "Car", "Pedestrian", "Cyclist"
 MAX_TRIAL  = 50                               # Attempts per frame
 MARGIN_XY  = 0.15                             # SAT buffer
 
@@ -139,10 +139,41 @@ def is_line_of_sight_clear(pc: np.ndarray, point: np.ndarray, margin=0.5):
 
     return not np.any(perp_distances < margin)
 
-def sample_range_angle(rng):
-    r = rng.uniform(12, 35)
-    theta = rng.uniform(-np.deg2rad(25), np.deg2rad(25))  # narrow cone
-    return r*np.cos(theta), r*np.sin(theta)
+def sample_pose_by_class(cls: str, rng):
+    """
+    Generates a realistic pose (x, y, yaw) based on the object class.
+    This allows for 360-degree placement.
+    """
+    if cls == "Car":
+        # Cars are either driving in adjacent lanes or parked. 50/50 chance.
+        if rng.random() < 0.5:
+            # A driving car
+            lane_y_offset = rng.uniform(2.5, 4.5)
+            y = lane_y_offset * rng.choice([-1, 1])
+            x = rng.uniform(-20, 40)
+            yaw = rng.normal(loc=0.0, scale=np.deg2rad(5))
+        else:
+            # A parked car
+            parking_y_offset = rng.uniform(4.0, 8.0)
+            y = parking_y_offset * rng.choice([-1, 1])
+            x = rng.uniform(-40, 40)
+            yaw = rng.normal(loc=0.0, scale=np.deg2rad(2))
+
+    elif cls == "Pedestrian":
+        # Pedestrian on sidewalk
+        sidewalk_y_offset = rng.uniform(3.5, 10.0)
+        y = sidewalk_y_offset * rng.choice([-1, 1])
+        x = rng.uniform(-15, 40)
+        yaw = rng.uniform(-np.pi, np.pi)
+
+    elif cls == "Cyclist":
+        # Cyclist on road edge
+        bike_lane_y_offset = rng.uniform(2.0, 4.0)
+        y = bike_lane_y_offset * rng.choice([-1, 1])
+        x = rng.uniform(-30, 40)
+        yaw = rng.normal(loc=0.0, scale=np.deg2rad(15))
+
+    return x, y, yaw
 
 def is_placement_realistic(box: Box, cls: str, scene_pc: np.ndarray):
     """ Context-aware placement check using local ground geometry. """
@@ -233,7 +264,7 @@ def insert_object(pc, labels, obj_db, cls, scene_boxes, calib_dict, rng, global_
         h, w, l = map(float, label.split()[8:11])
         z_min_donor = pts[:, 2].min()
 
-        x, y = sample_range_angle(rng)
+        x, y = sample_pose_by_class(cls, rng)
         yaw  = rng.uniform(-np.pi, np.pi)
 
         # Calculate the Z-height directly from the global plane equation
