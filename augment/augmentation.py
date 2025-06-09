@@ -1,26 +1,11 @@
 from pathlib import Path
+from collections import namedtuple
 import numpy as np
+import random
+import pickle
 import os
+import glob
 
-# Import our clean augmenter and all necessary visualization/utility tools
-from augmentation import DataAugmenter, load_kitti_calib
-from validation_visualizer import create_validation_plot, split_cloud
-
-# Some random frames
-FRAMES     = ["00200", "00442", "01376", "02350", "03816", "04100", "05050", "06900", "07300"]
-OBJ_CLASS  = "Cyclist"                     # Class to paste: "Car", "Pedestrian", "Cyclist"
-MAX_TRIAL  = 100                               # Attempts per frame
-MARGIN_XY  = 0.15                             # SAT buffer
-
-_HOME      = Path.home()
-DATA_ROOT  = _HOME / "final_assignment" / "data" / "view_of_delft"
-OBJ_DICT   = _HOME / "final_assignment" / "object_dict.pkl"
-AUG_DIR    = _HOME / "final_assignment" / "augmented_frames"
-FIG_DIR    = _HOME / "final_assignment" / "tests" / "figures"
-AUG_DIR.mkdir(parents=True, exist_ok=True)
-FIG_DIR.mkdir(parents=True, exist_ok=True)
-
-# geometry helpers 
 Box = namedtuple("Box", "x y z l w h yaw")
 
 def fit_global_ground_plane_ransac(pc: np.ndarray, iters=100, eps=0.1):
@@ -107,7 +92,7 @@ def _overlap_bev(a: Box, b: Box, margin=0.1):
             return False
     return True
 
-def boxes_overlap(a: Box, b: Box, m_xy=MARGIN_XY, m_z=0.1):
+def boxes_overlap(a: Box, b: Box, m_xy=0.15, m_z=0.1):
     """ Checks for 3D overlap between two boxes using BEV SAT + Z-axis check. """
     z_ok = abs(a.z - b.z) < (a.h + b.h) / 2 + m_z
     return z_ok and _overlap_bev(a, b, m_xy)
@@ -163,7 +148,7 @@ def sample_pose_by_class(cls: str, rng, sampler_pool: np.ndarray):
     # Class-Specific heuristics and dead zones
     if cls == "Car":
         # Enforce a "dead zone" immediately around the ego-vehicle for cars.
-        if x < 5 or x > 30 or y > 0.5 * x or y < -0.5 * x:
+        if -5 < x < 5:
             return None, None, None 
 
         # Cars should have an orientation aligned with the road
@@ -175,7 +160,7 @@ def sample_pose_by_class(cls: str, rng, sampler_pool: np.ndarray):
 
     elif cls == "Pedestrian" or cls == "Cyclist":
         # Pedestrians and cyclists can be closer, but not right on top of the car
-        if x < 2 or x > 30 or y > 0.5 * x or y < -0.5 * x:
+        if -2 < x < 2:
             return None, None, None # Reject if too close
 
         # Pedestrians can face any way, cyclists are mostly forward
@@ -202,7 +187,6 @@ def is_placement_realistic(box: Box, cls: str, scene_pc: np.ndarray):
         # Tighter threshold rejects vertical walls but allows for curbs
         return z_std_dev < 0.10 
     return True
-
 
 def get_points_in_box(pc: np.ndarray, box: Box):
     """ Helper to get indices of points from a cloud inside a 3D box. """
@@ -235,169 +219,159 @@ def load_point_cloud(p: Path):
     return np.fromfile(p, np.float32).reshape(-1, 4)
 
 def save_point_cloud(p, pts): 
-    """Saves a point cloud array to a .bin file."""
     pts.astype(np.float32).tofile(p)
 
+def load_labels(p):           
+    return Path(p).read_text().splitlines()
+
 def save_labels(p, lines):    
-    """Saves a list of label strings to a .txt file."""
     Path(p).write_text("\n".join(l.rstrip() for l in lines)+"\n")
 
-# insertion
-def insert_object(pc, labels, obj_db, cls, scene_boxes, calib_dict, rng, global_plane_params, sampler_pool, *, max_trials=MAX_TRIAL):
-    """
-    Selects a donor object and attempts to place it onto the pre-computed global ground plane.
-    """
-    # This check is crucial: if no global plane was found, we can't do anything.
-    if global_plane_params is None:
-        return pc, labels, scene_boxes, False
 
-    donors = obj_db.get(cls, [])
-    if not donors:
-        return pc, labels, scene_boxes, False
-
-    # Main loop to try multiple random poses
-    for _ in range(max_trials):
+class DataAugmenter:
+    def __init__(self, obj_db_path: str, augmentation_prob: float = 0.8, max_trials: int = 50):
+        """
+        Initializes the on-the-fly data augmenter. This is done ONCE per training run.
+        """
+        with open(obj_db_path, "rb") as f:
+            self.obj_db = pickle.load(f)
         
-        # Random object selection for variety 
-        ent = rng.choice(donors)
-        pts = ent["points"].copy()
+        self.augmentation_prob = augmentation_prob
+        self.max_trials = max_trials
+        self.classes_to_augment = list(self.obj_db.keys())
+        self.rng = np.random.default_rng()
+        print(f"Data Augmenter initialized. Augmenting with: {self.classes_to_augment}")
 
-        # Apply noise for robustness
-        pts = apply_noise_to_object(pts, rng)
-        point_count = len(pts)
-        if point_count > 150:
-            preferred_range = (2, 15)
-        elif point_count > 80:
-            preferred_range = (10, 25)
-        else:
-            preferred_range = (20, 35)
-        print(f"Trying to insert {cls} with {point_count} points...")
-        if len(pts) == 0: 
-            continue # All points were dropped, try again
+    def __call__(self, data_sample: dict):
+        """
+        The main method called by the data loader for each sample.
+        """
+        # Randomly decide whether to augment this scene at all
+        if self.rng.random() > self.augmentation_prob:
+            return data_sample
 
-        label = ent["label"]
-        h, w, l = map(float, label.split()[8:11])
-        z_min_donor = pts[:, 2].min()
+        # Prepare data for augmentation
+        pc = data_sample['pc'].copy()
+        labels = data_sample['labels'].copy()
+        calib = data_sample['calib']
+        cls_to_insert = self.rng.choice(self.classes_to_augment)
 
-        x, y, yaw = sample_pose_by_class(cls, rng, sampler_pool)
+        # Perform pre-computations needed for insertion
+        global_plane_params = fit_global_ground_plane_ransac(pc)
+        sampler_pool = get_data_driven_sampler_pool(pc)
+        Tr_cam_to_velo = np.linalg.inv(np.vstack([calib["Tr_velo_to_cam"], [0, 0, 0, 1]]))
+        scene_boxes = []
+        for ln in labels:
+            p = ln.split()
+            if p[0] not in ['Car', 'Pedestrian', 'Cyclist']: 
+                continue
+            h_c, w_c, l_c = map(float, p[8:11]); x_c, y_c, z_c = map(float, p[11:14]); ry_c = float(p[14])
+            loc_velo = (Tr_cam_to_velo @ np.array([x_c, y_c, z_c, 1.0]))[:3]
+            scene_boxes.append(Box(loc_velo[0], loc_velo[1], loc_velo[2], l_c, w_c, h_c, -(ry_c + np.pi/2)))
 
-        # if sampler rejected the pose
-        if x is None:
-            continue
-        # Check if the sampled position is within the preferred range
-        if not (preferred_range[0] < np.linalg.norm([x, y]) < preferred_range[1]):
-            continue
-        # Calculate the Z-height directly from the global plane equation
-        a, b, c, d = global_plane_params
-        # Check for a near-zero 'c' to avoid division by zero if the plane is vertical
-        if abs(c) < 1e-6:
-            continue
+        # Call the core insertion logic
+        pc_aug, lab_aug, _, ok = self._perform_insertion(
+            pc, labels, self.obj_db, cls_to_insert, scene_boxes, calib, self.rng, global_plane_params, sampler_pool)
 
-        global_ground_z = -(a * x + b * y + d) / c
-
-        # Final object position
-        z = global_ground_z + (h / 2) - z_min_donor
-        box = Box(x, y, z, l, w, h, yaw)
-
-        # Validation checks
-        if not is_placement_realistic(box, cls, pc):                    
-            continue
+        # If successful, update the data_sample. Otherwise, return the original.
+        if ok:
+            data_sample['pc'] = pc_aug
+            data_sample['labels'] = lab_aug
         
-        if any(boxes_overlap(box, b) for b in scene_boxes):             
-            continue
-        
-        points_in_box_indices = get_points_in_box(pc, box)
-        if len(points_in_box_indices) > 5:                              
-            continue
-        
-        if not is_line_of_sight_clear(pc, np.array([box.x, y, z])):      
-            continue
-
-        # Hole cutting an paste object
-        pc = np.delete(pc, points_in_box_indices, axis=0)
-
-        Rz = np.array([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw),  np.cos(yaw), 0], [0, 0, 1]], np.float32)
-        centroid_xy = np.mean(pts[:, :2], axis=0)
-        pts[:, 0] -= centroid_xy[0]
-        pts[:, 1] -= centroid_xy[1]
-        pts[:, 2] -= z_min_donor
-        pts[:, :3] = (Rz @ pts[:, :3].T).T
-        pts[:, :3] += np.array([x, y, global_ground_z])
-
-        # Finalize point cloud and labels
-        if pts.shape[1] == 3: 
-            pts = np.hstack([pts, 0.5 * np.ones((pts.shape[0], 1), dtype=np.float32)])
-
-        sem = np.zeros((pts.shape[0], 5), np.float32)
-        sem_idx = {"Car": 1, "Pedestrian": 2, "Cyclist": 3}.get(cls, 4)
-        sem[:, sem_idx] = 1.0
-
-        if pc.shape[1] == 4:
-            base_sem = np.zeros((pc.shape[0], 5), np.float32) 
-            base_sem[:, 0] = 1.0
-            pc = np.hstack([pc, base_sem])
-
-        pts = np.hstack([pts, sem])
-        pc = np.vstack([pc, pts])
-        labels.append(label)
-        scene_boxes.append(box)
-
-        # Valid pose was found
-        return pc, labels, scene_boxes, True 
+        return data_sample
     
-    # Max trials reached, no success
-    return pc, labels, scene_boxes, False
+    def _perform_insertion(self, pc, labels, obj_db, cls, scene_boxes, calib_dict, rng, global_plane_params, sampler_pool):
+        """
+        Selects a donor object and attempts to place it onto the pre-computed global ground plane.
+        """
+        # This check is crucial: if no global plane was found, we can't do anything.
+        if global_plane_params is None:
+            return pc, labels, scene_boxes, False
 
-# main loop 
-if __name__ == "__main__":
-    # Initialize the augmenter. It will now default to using all available classes.
-    print("Running in DEBUG mode")
-    augmenter = DataAugmenter(obj_db_path=OBJ_DICT, augmentation_prob=1.0)
+        donors = obj_db.get(cls, [])
+        if not donors:
+            return pc, labels, scene_boxes, False
 
-    for frame in FRAMES:
-        print(f"\nProcessing frame {frame}...")
+        # Main loop to try multiple random poses
+        for _ in range(self.max_trials):
+            
+            # Random object selection for variety 
+            ent = rng.choice(donors)
+            pts = ent["points"].copy()
+
+            # Apply noise for robustness
+            pts = apply_noise_to_object(pts, rng)
+
+            if len(pts) == 0: 
+                continue # All points were dropped, try again
+
+            label = ent["label"]
+            h, w, l = map(float, label.split()[8:11])
+            z_min_donor = pts[:, 2].min()
+
+            x, y, yaw = sample_pose_by_class(cls, rng, sampler_pool)
+
+            # if sampler rejected the pose
+            if x is None:
+                continue
+
+            # Calculate the Z-height directly from the global plane equation
+            a, b, c, d = global_plane_params
+            # Check for a near-zero 'c' to avoid division by zero if the plane is vertical
+            if abs(c) < 1e-6:
+                continue
+
+            global_ground_z = -(a * x + b * y + d) / c
+
+            # Final object position
+            z = global_ground_z + (h / 2) - z_min_donor
+            box = Box(x, y, z, l, w, h, yaw)
+
+            # Validation checks
+            if not is_placement_realistic(box, cls, pc):                    
+                continue
+            
+            if any(boxes_overlap(box, b) for b in scene_boxes):             
+                continue
+            
+            points_in_box_indices = get_points_in_box(pc, box)
+            if len(points_in_box_indices) > 5:                              
+                continue
+            
+            if not is_line_of_sight_clear(pc, np.array([box.x, y, z])):      
+                continue
+
+            # Hole cutting an paste object
+            pc = np.delete(pc, points_in_box_indices, axis=0)
+
+            Rz = np.array([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw),  np.cos(yaw), 0], [0, 0, 1]], np.float32)
+            centroid_xy = np.mean(pts[:, :2], axis=0)
+            pts[:, 0] -= centroid_xy[0]
+            pts[:, 1] -= centroid_xy[1]
+            pts[:, 2] -= z_min_donor
+            pts[:, :3] = (Rz @ pts[:, :3].T).T
+            pts[:, :3] += np.array([x, y, global_ground_z])
+
+            # Finalize point cloud and labels
+            if pts.shape[1] == 3: 
+                pts = np.hstack([pts, 0.5 * np.ones((pts.shape[0], 1), dtype=np.float32)])
+
+            sem = np.zeros((pts.shape[0], 5), np.float32)
+            sem_idx = {"Car": 1, "Pedestrian": 2, "Cyclist": 3}.get(cls, 4)
+            sem[:, sem_idx] = 1.0
+
+            if pc.shape[1] == 4:
+                base_sem = np.zeros((pc.shape[0], 5), np.float32) 
+                base_sem[:, 0] = 1.0
+                pc = np.hstack([pc, base_sem])
+
+            pts = np.hstack([pts, sem])
+            pc = np.vstack([pc, pts])
+            labels.append(label)
+            scene_boxes.append(box)
+
+            # Valid pose was found
+            return pc, labels, scene_boxes, True 
         
-        # Load a single data sample from disk for this test
-        lidar_path = DATA_ROOT / "lidar/training/velodyne" / f"{frame}.bin"
-        label_path = DATA_ROOT / "lidar/training/label_2" / f"{frame}.txt"
-        calib_path = DATA_ROOT / "lidar/training/calib" / f"{frame}.txt"
-        rgb_path   = DATA_ROOT / "lidar/training/image_2" / f"{frame}.jpg"
-
-        pc = np.fromfile(lidar_path, dtype=np.float32).reshape(-1, 4)
-        with open(label_path, 'r') as f:
-            labels = f.read().splitlines()
-        calib = load_kitti_calib(calib_path)
-
-        # Create the data sample dictionary and pass it to the augmenter
-        original_sample = {'pc': pc, 'labels': labels, 'calib': calib}
-        augmented_sample = augmenter(original_sample)
-
-        # Check if the augmentation was successful by seeing if a label was added
-        if len(augmented_sample['labels']) > len(labels):
-            
-            # Intelligently find out which class was actually inserted for the plot title
-            added_class = augmented_sample['labels'][-1].split()[0]
-            print(f"Augmentation successful (inserted a '{added_class}').")
-            
-            # Save the augmented .bin and .txt files
-            aug_bin_path = AUG_DIR / f"{frame}_aug.bin"
-            aug_label_path = AUG_DIR / f"{frame}_aug.txt"
-            save_point_cloud(aug_bin_path, augmented_sample['pc'])
-            save_labels(aug_label_path, augmented_sample['labels'])
-            print(f"Saved augmented data to {aug_bin_path.name} and {aug_label_path.name}")
-
-            # Generate the validation plot
-            orig_xyz, ins_xyz = split_cloud(augmented_sample['pc'])
-            val_plot_path = FIG_DIR / f"{frame}_{added_class.lower()}_validation.png"
-            create_validation_plot(
-                original_xyz=orig_xyz,
-                inserted_xyz=ins_xyz,
-                image_path=rgb_path,
-                calib=calib,
-                save_path=val_plot_path,
-                obj_class=added_class
-            )
-        else:
-            print("Augmentation attempt failed (no valid pose found).")
-
-    print("\nDebug run finished")
+        # Max trials reached, no success
+        return pc, labels, scene_boxes, False
