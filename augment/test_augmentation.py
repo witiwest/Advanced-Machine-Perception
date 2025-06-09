@@ -10,7 +10,7 @@ from validation_visualizer import create_validation_plot, split_cloud
 
 # Some random frames
 FRAMES     = ["00100", "00242", "00376", "00550", "00816", "01100", "01450", "01900", "02300"]
-OBJ_CLASS  = "Cyclist"                     # Class to paste: "Car", "Pedestrian", "Cyclist"
+OBJ_CLASS  = "Pedestrian"                     # Class to paste: "Car", "Pedestrian", "Cyclist"
 MAX_TRIAL  = 50                               # Attempts per frame
 MARGIN_XY  = 0.15                             # SAT buffer
 
@@ -139,39 +139,49 @@ def is_line_of_sight_clear(pc: np.ndarray, point: np.ndarray, margin=0.5):
 
     return not np.any(perp_distances < margin)
 
-def sample_pose_by_class(cls: str, rng):
+def get_data_driven_sampler_pool(pc: np.ndarray):
     """
-    Generates a realistic pose (x, y, yaw) based on the object class.
-    This allows for 360-degree placement.
+    Filters the scene's point cloud to find all points that are likely on a
+    traversable ground surface, creating a pool for data-driven sampling.
     """
+    # Exclude points that are too close (ego-vehicle), too high (buildings),
+    # or potentially part of the sky.
+    ground_mask = (pc[:, 2] < -0.5) & (np.linalg.norm(pc[:, :2], axis=1) > 10)
+    return pc[ground_mask, :2]
+
+def sample_pose_by_class(cls: str, rng, sampler_pool: np.ndarray):
+    """
+    Generates a realistic pose by sampling from a pool of valid ground points
+    and applying class-specific rules.
+    """
+    # Randomly select a candidate (x,y) from the pre-filtered ground points.
+    # This ensures we always start from a plausible location.
+    if len(sampler_pool) == 0:
+        return None, None, None 
+    
+    candidate_idx = rng.choice(len(sampler_pool))
+    x, y = sampler_pool[candidate_idx]
+
+    # Class-Specific heuristics and dead zones
     if cls == "Car":
-        # Cars are either driving in adjacent lanes or parked. 50/50 chance.
-        if rng.random() < 0.5:
-            # A driving car
-            lane_y_offset = rng.uniform(2.5, 4.5)
-            y = lane_y_offset * rng.choice([-1, 1])
-            x = rng.uniform(-20, 40)
-            yaw = rng.normal(loc=0.0, scale=np.deg2rad(5))
-        else:
-            # A parked car
-            parking_y_offset = rng.uniform(4.0, 8.0)
-            y = parking_y_offset * rng.choice([-1, 1])
-            x = rng.uniform(-40, 40)
-            yaw = rng.normal(loc=0.0, scale=np.deg2rad(2))
+        # Enforce a "dead zone" immediately around the ego-vehicle for cars.
+        if -5 < x < 5:
+            return None, None, None 
 
-    elif cls == "Pedestrian":
-        # Pedestrian on sidewalk
-        sidewalk_y_offset = rng.uniform(3.5, 10.0)
-        y = sidewalk_y_offset * rng.choice([-1, 1])
-        x = rng.uniform(-15, 40)
-        yaw = rng.uniform(-np.pi, np.pi)
+        # Cars should have an orientation aligned with the road
+        yaw = rng.normal(loc=0.0, scale=np.deg2rad(5))
+        
+        # Small random offset to simulate not being perfectly centered on a point
+        x += rng.uniform(-0.5, 0.5)
+        y += rng.uniform(-0.5, 0.5)
 
-    elif cls == "Cyclist":
-        # Cyclist on road edge
-        bike_lane_y_offset = rng.uniform(2.0, 4.0)
-        y = bike_lane_y_offset * rng.choice([-1, 1])
-        x = rng.uniform(-30, 40)
-        yaw = rng.normal(loc=0.0, scale=np.deg2rad(15))
+    elif cls == "Pedestrian" or cls == "Cyclist":
+        # Pedestrians and cyclists can be closer, but not right on top of the car
+        if -2 < x < 2:
+            return None, None, None # Reject if too close
+
+        # Pedestrians can face any way, cyclists are mostly forward
+        yaw = rng.uniform(-np.pi, np.pi) if cls == "Pedestrian" else rng.normal(loc=0.0, scale=np.deg2rad(20))
 
     return x, y, yaw
 
@@ -235,7 +245,7 @@ def save_labels(p, lines):
     Path(p).write_text("\n".join(l.rstrip() for l in lines)+"\n")
 
 # insertion
-def insert_object(pc, labels, obj_db, cls, scene_boxes, calib_dict, rng, global_plane_params, *, max_trials=MAX_TRIAL):
+def insert_object(pc, labels, obj_db, cls, scene_boxes, calib_dict, rng, global_plane_params, sampler_pool, *, max_trials=MAX_TRIAL):
     """
     Selects a donor object and attempts to place it onto the pre-computed global ground plane.
     """
@@ -264,8 +274,11 @@ def insert_object(pc, labels, obj_db, cls, scene_boxes, calib_dict, rng, global_
         h, w, l = map(float, label.split()[8:11])
         z_min_donor = pts[:, 2].min()
 
-        x, y = sample_pose_by_class(cls, rng)
-        yaw  = rng.uniform(-np.pi, np.pi)
+        x, y, yaw = sample_pose_by_class(cls, rng, sampler_pool)
+
+        # if sampler rejected the pose
+        if x is None:
+            continue
 
         # Calculate the Z-height directly from the global plane equation
         a, b, c, d = global_plane_params
@@ -352,6 +365,8 @@ if __name__ == "__main__":
         # Calculate the single global ground plane for the entire scene.
         global_plane_params = fit_global_ground_plane_ransac(pc)
 
+        sampler_pool = get_data_driven_sampler_pool(pc)
+
         Tr_cam_to_velo = np.linalg.inv(np.vstack([calib_dict["Tr_velo_to_cam"], [0, 0, 0, 1]]))
         
         scene_boxes = []
@@ -361,9 +376,9 @@ if __name__ == "__main__":
             loc_velo = (Tr_cam_to_velo @ np.array([x_c, y_c, z_c, 1.0]))[:3]
             scene_boxes.append(Box(loc_velo[0], loc_velo[1], loc_velo[2], l_c, w_c, h_c, -(ry_c + np.pi/2)))
 
-        # 2. Pass the computed global_plane_params to the insertion function.
+        # Pass the computed global_plane_params to the insertion function.
         pc_aug, lab_aug, _, ok = insert_object(
-            pc.copy(), lab.copy(), OBJ_DB, OBJ_CLASS, scene_boxes, calib_dict, rng, global_plane_params)
+            pc.copy(), lab.copy(), OBJ_DB, OBJ_CLASS, scene_boxes, calib_dict, rng, global_plane_params, sampler_pool)
 
         if ok:
             aug_bin_path = AUG_DIR / f"{frame}_aug.bin"
