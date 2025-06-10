@@ -92,35 +92,46 @@ def _overlap_bev(a: Box, b: Box, margin=0.1):
             return False
     return True
 
-def boxes_overlap(a: Box, b: Box, m_xy=0.15, m_z=0.1):
+def boxes_overlap(a: Box, b: Box, m_xy=0.01, m_z=0.01):
     """ Checks for 3D overlap between two boxes using BEV SAT + Z-axis check. """
     z_ok = abs(a.z - b.z) < (a.h + b.h) / 2 + m_z
     return z_ok and _overlap_bev(a, b, m_xy)
 
 # realistic-placement helpers
-def is_line_of_sight_clear(pc: np.ndarray, point: np.ndarray, margin=0.5):
+def is_line_of_sight_clear(pc: np.ndarray, object: np.ndarray, margin=0.25):
     """
-    Checks if the line of sight from origin (0,0,0) to a target point
-    is clear of other points in the point cloud.
+    Removes points in 'object' that are occluded by points in 'pc'
+    when viewed from the origin (0, 0, 0).
     """
-    direction = point / (np.linalg.norm(point) + 1e-6)
-    # Project all scene points onto the ray direction vector
-    projections = pc[:,:3] @ direction
-    
-    # Get the distance of the target point along the ray
-    point_dist = np.linalg.norm(point)
-    
-    # Select scene points that are "in front" of the target point
-    relevant_points = pc[(projections > 0) & (projections < point_dist)]
-    if len(relevant_points) == 0:
-        return True # Nothing is in front
+    occlusion_mask = []
+    for point in object:
+        norm = np.linalg.norm(point)
+        if norm < 1e-8:
+            occlusion_mask.append(True)
+            continue
         
-    # For those points, find their perpendicular distance to the ray
-    # If any point is close to the ray, the LoS is blocked
-    perp_distances = np.linalg.norm(relevant_points[:,:3] - 
-                                   (relevant_points[:,:3] @ direction)[:, np.newaxis] * direction, axis=1)
-
-    return not np.any(perp_distances < margin)
+        direction = point / norm
+        projections = pc[:, :3] @ direction
+        point_dist = norm
+        
+        # Filter points in front of origin and closer than target point
+        relevant_points = pc[(projections > 0) & (projections < point_dist)]
+        if len(relevant_points) == 0:
+            occlusion_mask.append(True)
+            continue
+        
+        # Compute perpendicular distances to the ray
+        distances = np.linalg.norm(
+            relevant_points[:, :3] - np.outer(projections[(projections > 0) & (projections < point_dist)], direction),
+            axis=1
+        )
+        if np.any(distances < margin):
+            occlusion_mask.append(False)
+        else:
+            occlusion_mask.append(True)
+    
+    occlusion_mask = np.array(occlusion_mask)
+    return object[occlusion_mask]
 
 def get_data_driven_sampler_pool(pc: np.ndarray):
     """
@@ -176,7 +187,7 @@ def is_placement_realistic(box: Box, cls: str, scene_pc: np.ndarray):
     if len(local_points) < 10: return False
 
     ground_points = local_points[local_points[:, 2] < (local_points[:, 2].min() + 0.25)]
-    if len(ground_points) < 5: return False
+    if len(ground_points) < 10: return False
     
     z_std_dev = np.std(ground_points[:, 2])
 
@@ -198,6 +209,72 @@ def get_points_in_box(pc: np.ndarray, box: Box):
                   (np.abs(rotated_points[:, 1]) < box.w / 2) & \
                   (np.abs(rotated_points[:, 2]) < box.h / 2)
     return np.where(in_box_mask)[0]
+
+def remove_occluded_points(pc: np.ndarray, box_center: np.ndarray, box_dims: tuple, sensor_origin=np.array([0,0,0])):
+    """
+    Remove points occluded by the inserted object along LoS from sensor.
+    
+    Args:
+        pc: (N,4) LiDAR points
+        box_center: (3,) center of inserted object
+        box_dims: (width, length, height) of object
+        sensor_origin: sensor coordinates (default at origin)
+    
+    Returns:
+        filtered_pc: points with occluded points removed
+    """
+
+    # Calculate corners of the box in XY plane (assuming axis aligned)
+    w, l, _ = box_dims
+    x_c, y_c, _ = box_center
+    
+    # Corners in XY
+    corners = np.array([
+        [x_c - w/2, y_c - l/2],
+        [x_c - w/2, y_c + l/2],
+        [x_c + w/2, y_c - l/2],
+        [x_c + w/2, y_c + l/2]
+    ])
+    
+    # Compute angles from sensor to corners
+    vectors_to_corners = corners - sensor_origin[:2]
+    angles_corners = np.arctan2(vectors_to_corners[:,1], vectors_to_corners[:,0])
+    
+    min_angle = angles_corners.min()
+    max_angle = angles_corners.max()
+
+    # Convert points to polar coordinates relative to sensor
+    points_xy = pc[:, :2] - sensor_origin[:2]
+    points_ranges = np.linalg.norm(points_xy, axis=1)
+    points_angles = np.arctan2(points_xy[:,1], points_xy[:,0])
+    
+    # Normalize angles to [-pi, pi]
+    def normalize_angle(a):
+        return (a + np.pi) % (2 * np.pi) - np.pi
+
+    points_angles = normalize_angle(points_angles)
+    min_angle = normalize_angle(min_angle)
+    max_angle = normalize_angle(max_angle)
+
+    # Check if point angle is inside the box angular range (handle wrap-around)
+    if min_angle < max_angle:
+        inside_angular = (points_angles >= min_angle) & (points_angles <= max_angle)
+    else:
+        # Wrap around case
+        inside_angular = (points_angles >= min_angle) | (points_angles <= max_angle)
+
+    # Approximate distance from sensor to box surface along each angle:
+    # For simplicity, approximate box range as distance to box center minus half diagonal (for safety)
+    box_diag = np.sqrt(w**2 + l**2)/2
+    box_range = np.linalg.norm(box_center[:2] - sensor_origin[:2]) - box_diag
+    
+    # Points inside angular sector AND farther than box_range are occluded
+    occluded_mask = inside_angular & (points_ranges > box_range)
+    
+    # Remove occluded points
+    filtered_pc = pc[~occluded_mask]
+
+    return filtered_pc
 
 def _read_12(line):
     """Convert 'tag: 12 floats' into (3,4) array."""
@@ -305,10 +382,11 @@ class DataAugmenter:
             if point_count > 150:
                 preferred_range = (2, 15)
             elif point_count > 80:
-                preferred_range = (10, 25)
+                preferred_range = (15, 25)
             else:
-                preferred_range = (20, 35)
+                preferred_range = (25, 35)
             print(f"Trying to insert {cls} with {point_count} points...")
+
 
             if len(pts) == 0: 
                 continue # All points were dropped, try again
@@ -348,10 +426,10 @@ class DataAugmenter:
             points_in_box_indices = get_points_in_box(pc, box)
             if len(points_in_box_indices) > 5:                              
                 continue
-            
-            if not is_line_of_sight_clear(pc, np.array([box.x, y, z])):      
+            # Check if the object is occluded by other points in the scene
+            # pts = is_line_of_sight_clear(pc, pts, margin=0.05)
+            if len(pts) == 0: 
                 continue
-
             # Hole cutting an paste object
             pc = np.delete(pc, points_in_box_indices, axis=0)
 
@@ -362,6 +440,8 @@ class DataAugmenter:
             pts[:, 2] -= z_min_donor
             pts[:, :3] = (Rz @ pts[:, :3].T).T
             pts[:, :3] += np.array([x, y, global_ground_z])
+
+            pc = remove_occluded_points(pc, np.array([x, y, z]), (w, l, h))
 
             # Finalize point cloud and labels
             if pts.shape[1] == 3: 
