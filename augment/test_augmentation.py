@@ -9,9 +9,9 @@ import glob
 from validation_visualizer import create_validation_plot, split_cloud
 
 # Some random frames
-FRAMES     = ["00100", "00242", "00376", "00550", "00816", "01100", "01450", "01900", "02300"]
-OBJ_CLASS  = "Pedestrian"                     # Class to paste: "Car", "Pedestrian", "Cyclist"
-MAX_TRIAL  = 50                               # Attempts per frame
+FRAMES     = ["00200", "00442", "01376", "02350", "03816", "04100", "05050", "06900", "07300"]
+OBJ_CLASS  = "Cyclist"                     # Class to paste: "Car", "Pedestrian", "Cyclist"
+MAX_TRIAL  = 100                               # Attempts per frame
 MARGIN_XY  = 0.15                             # SAT buffer
 
 _HOME      = Path.home()
@@ -165,7 +165,7 @@ def sample_pose_by_class(cls: str, rng, sampler_pool: np.ndarray):
     # Class-Specific heuristics and dead zones
     if cls == "Car":
         # Enforce a "dead zone" immediately around the ego-vehicle for cars.
-        if -5 < x < 5:
+        if x < 5 or x > 30 or y > 0.5 * x or y < -0.5 * x:
             return None, None, None 
 
         # Cars should have an orientation aligned with the road
@@ -177,7 +177,7 @@ def sample_pose_by_class(cls: str, rng, sampler_pool: np.ndarray):
 
     elif cls == "Pedestrian" or cls == "Cyclist":
         # Pedestrians and cyclists can be closer, but not right on top of the car
-        if -2 < x < 2:
+        if x < 2 or x > 30 or y > 0.5 * x or y < -0.5 * x:
             return None, None, None # Reject if too close
 
         # Pedestrians can face any way, cyclists are mostly forward
@@ -204,6 +204,7 @@ def is_placement_realistic(box: Box, cls: str, scene_pc: np.ndarray):
         # Tighter threshold rejects vertical walls but allows for curbs
         return z_std_dev < 0.10 
     return True
+
 
 def get_points_in_box(pc: np.ndarray, box: Box):
     """ Helper to get indices of points from a cloud inside a 3D box. """
@@ -266,7 +267,14 @@ def insert_object(pc, labels, obj_db, cls, scene_boxes, calib_dict, rng, global_
 
         # Apply noise for robustness
         pts = apply_noise_to_object(pts, rng)
-
+        point_count = len(pts)
+        if point_count > 150:
+            preferred_range = (2, 15)
+        elif point_count > 80:
+            preferred_range = (10, 25)
+        else:
+            preferred_range = (20, 35)
+        print(f"Trying to insert {cls} with {point_count} points...")
         if len(pts) == 0: 
             continue # All points were dropped, try again
 
@@ -279,7 +287,9 @@ def insert_object(pc, labels, obj_db, cls, scene_boxes, calib_dict, rng, global_
         # if sampler rejected the pose
         if x is None:
             continue
-
+        # Check if the sampled position is within the preferred range
+        if not (preferred_range[0] < np.linalg.norm([x, y]) < preferred_range[1]):
+            continue
         # Calculate the Z-height directly from the global plane equation
         a, b, c, d = global_plane_params
         # Check for a near-zero 'c' to avoid division by zero if the plane is vertical

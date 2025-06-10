@@ -293,7 +293,7 @@ for i, (pc, raw_anns, velo_ann_list) in enumerate(zip(training_data, [open(p).re
         parsed_class = raw_line.strip().split()[0]
         if parsed_class not in INTEREST:
             continue
-        if len(pts_in_box) == 0:
+        if len(pts_in_box) <= 8:
             continue  # Skip empty boxes
         
         entry = {
