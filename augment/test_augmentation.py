@@ -2,7 +2,7 @@ from pathlib import Path
 import numpy as np
 import os
 
-# Import our clean augmenter and all necessary visualization/utility tools
+from collections import namedtuple
 from augmentation import DataAugmenter, load_kitti_calib
 from validation_visualizer import create_validation_plot, split_cloud
 
