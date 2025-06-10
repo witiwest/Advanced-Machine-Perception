@@ -10,7 +10,7 @@ from torch.nn import Conv2d
 
 from ..bricks.conv_module import ConvModule
 from ..utils import multi_apply, xywhr2xyxyr, circle_nms, draw_heatmap_gaussian, gaussian_radius, clip_sigmoid, CenterPointBBoxCoder, LiDARInstance3DBoxes
-from ..losses import L1Loss, GaussianFocalLoss
+from ..losses import L1Loss, GaussianFocalLoss, DIoU3DLoss, SmoothL1Loss 
 from common_src.ops import nms_gpu
 
 
@@ -138,7 +138,7 @@ class CenterHead(nn.Module):
                  bbox_coder: Optional[dict] = None, # CenterPointBBoxCoder
                  common_heads: dict = dict(),
                  loss_cls: dict = dict(reduction='mean'), # GaussianFocalLoss
-                 loss_bbox: dict = dict(reduction='none', loss_weight=0.25), # L1Loss
+                 loss_bbox: dict = dict(reduction='none', loss_weight=0.25), # L1Loss/smoothL1Loss
                  separate_head: dict = dict(
                      init_bias=-2.19,
                      final_kernel=3), # SeparateHead
@@ -160,7 +160,9 @@ class CenterHead(nn.Module):
         self.norm_bbox = norm_bbox
 
         self.loss_cls = GaussianFocalLoss(**loss_cls)
+        self.loss_diou = DIoU3DLoss(loss_weight=loss_bbox.get('loss_weight', 1.0))
         self.loss_bbox = L1Loss(**loss_bbox)
+        #self.loss_bbox = SmoothL1Loss(**loss_bbox)
         self.bbox_coder = CenterPointBBoxCoder(**bbox_coder)
         self.num_anchor_per_locs = [n for n in num_classes]
 
@@ -411,7 +413,7 @@ class CenterHead(nn.Module):
         """Loss function for CenterHead.
 
         Args:
-            gt_bboxes_3d (list[:obj:`LiDARInstance3DBoxes`]): Ground
+            gt_bboxes_3d (list[:obj:LiDARInstance3DBoxes]): Ground
                 truth gt boxes.
             gt_labels_3d (list[torch.Tensor]): Labels of boxes.
             preds_dicts (dict): Output of forward function.
@@ -455,10 +457,31 @@ class CenterHead(nn.Module):
             bbox_weights = bbox_weights.cuda()
             pred = pred.cuda()
             target_box = target_box.cuda()
-            loss_bbox = self.loss_bbox(
+
+            loss_l1 = self.loss_bbox(
                 pred, target_box, bbox_weights, avg_factor=(num + 1e-4))
+            
+            mask_flat = masks[task_id].view(-1)
+            pred_boxes = pred.view(-1, pred.shape[-1])[mask_flat > 0]
+            target_boxes = target_box.view(-1, target_box.shape[-1])[mask_flat > 0]
+            if pred_boxes.numel() == 0 or target_boxes.numel() == 0:
+                loss_diou = torch.tensor(0.0, device=pred.device)
+            else:
+                loss_diou = self.loss_diou(pred_boxes[:, :7], target_boxes[:, :7])
+            
+            if pred_boxes.shape[0] != target_boxes.shape[0]:
+                print(f"[Warning] DIoU input mismatch in task{task_id}: pred {pred_boxes.shape}, target {target_boxes.shape}")
+
+
+            lambda_diou = 2.0 # of 0.5, af te stemmen
+            #loss_bbox = lambda_diou * loss_diou
+            loss_bbox = loss_l1 + lambda_diou * loss_diou
+            #loss_bbox = loss_l1
+
             loss_dict[f'task{task_id}.loss_heatmap'] = loss_heatmap
             loss_dict[f'task{task_id}.loss_bbox'] = loss_bbox
+            loss_dict[f'task{task_id}.loss_l1'] = loss_l1
+            loss_dict[f'task{task_id}.loss_diou'] = loss_diou
         return loss_dict
 
     def get_bboxes(self, preds_dicts, img_metas, img=None, rescale=False):
