@@ -86,11 +86,25 @@ class CenterPointPainting(L.LightningModule):
 
         return voxel_dict
 
+    def paint_points(self, pts_data, image_data, transforms):
+        painted_points = []
+
+        for point, image, transform in zip(pts_data, image_data, transforms):
+            painted_points.append(
+                self.point_painting.paint_points(point, image, transform)
+            )
+
+        return painted_points
+
     def _model_forward(self, pts_data, image_data, transforms):
 
-        painted_points = self.point_painting.paint_points(
-            pts_data, image_data, transforms
-        )
+        painted_points = self.paint_points(pts_data, image_data, transforms)
+
+        # torch.save(painted_points[0].cpu(), "painted_points.pt")
+
+        # raise NotImplementedError(
+        #     "PointPainting runs through without crashing, time to visualize and make sure it's actually right"
+        # )
 
         voxel_dict = self.voxelize(painted_points)
 
@@ -112,8 +126,6 @@ class CenterPointPainting(L.LightningModule):
         gt_bboxes_3d = batch["gt_bboxes_3d"]
         image_data = batch["image"]
         transforms = batch["transforms"]
-
-        print(f"Point cloud data: {pts_data}")
 
         ret_dict = self._model_forward(pts_data, image_data, transforms)
         loss_input = [gt_bboxes_3d, gt_label_3d, ret_dict]
@@ -148,7 +160,7 @@ class CenterPointPainting(L.LightningModule):
         gt_bboxes_3d = batch["gt_bboxes_3d"]
 
         image_data = batch["image"]
-        transforms = batch["transforms"][0]
+        transforms = batch["transforms"]
 
         ret_dict = self._model_forward(pts_data, image_data, transforms)
         loss_input = [gt_bboxes_3d, gt_label_3d, ret_dict]

@@ -124,8 +124,8 @@ class ViewOfDelft(Dataset):
 
         gt_labels_3d = torch.tensor(gt_labels_3d)
 
-        image_data = vod_frame_data.image
-        # image_data = torch.tensor(image)
+        # image_data = vod_frame_data.image
+        image_data = torch.tensor(vod_frame_data.image)
 
         return dict(
             lidar_data=lidar_data,
@@ -135,4 +135,3 @@ class ViewOfDelft(Dataset):
             gt_bboxes_3d=gt_bboxes_3d,
             meta=dict(num_frame=num_frame),
         )
-

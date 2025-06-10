@@ -1,10 +1,16 @@
 from torchvision.models.segmentation import (
     deeplabv3_resnet101,
+    deeplabv3_resnet50,
+    deeplabv3_mobilenet_v3_large,
     DeepLabV3_ResNet101_Weights,
+    DeepLabV3_ResNet50_Weights,
+    DeepLabV3_MobileNet_V3_Large_Weights,
 )
 import numpy as np
 import torchvision.transforms as T
+from torchvision.transforms.functional import to_pil_image
 import torch
+from PIL import Image
 
 
 class PointPainting:
@@ -22,8 +28,13 @@ class PointPainting:
         self.crop_point_cloud = crop_point_cloud
 
         # Initialize the pretrained semantic segmentation model
-        self.weights = DeepLabV3_ResNet101_Weights.DEFAULT
-        self.model = deeplabv3_resnet101(weights=self.weights)
+        # self.weights = DeepLabV3_ResNet101_Weights.DEFAULT
+        # self.model = deeplabv3_resnet101(weights=self.weights)
+        # self.weights = DeepLabV3_ResNet50_Weights.DEFAULT
+        # self.model = deeplabv3_resnet50(weights=self.weights)
+        self.weights = DeepLabV3_MobileNet_V3_Large_Weights.DEFAULT
+        self.model = deeplabv3_mobilenet_v3_large(weights=self.weights)
+
         self.model.eval()
 
         self.preprocess = self.weights.transforms(resize_size=None)
@@ -76,12 +87,20 @@ class PointPainting:
         else:
             painted_point_cloud = point_cloud
 
+        # Create mask of already assigned points and skip them
+        augmented_points_mask = painted_point_cloud[painted_points_indices, 4] != 1.0
+        painted_points_indices = painted_points_indices[augmented_points_mask]
+        uvs = uvs[augmented_points_mask]
+
         # Assign semantic segmentation output to semantic channels, skipping the
         # ones that are already assigned (augmented data)
+
+        # Remove "unknown" class from all points inside image
         painted_point_cloud[painted_points_indices, 4] = 0.0
-        painted_point_cloud[painted_points_indices, 5:] = predictions[
-            0, :, uvs[:, 0], uvs[:, 1]
-        ].T
+
+        # Paint points inside image according to their predicted classes
+        point_preds = predictions[0, :, uvs[:, 1], uvs[:, 0]].T  # [M, num_classes]
+        painted_point_cloud[painted_points_indices, 5:] = point_preds
 
         # Return painted point cloud
         return painted_point_cloud
@@ -110,44 +129,8 @@ class PointPainting:
         """
 
         # Get relevant matrices from tranforms object
-        print(transforms)
-
         t_camera_lidar = transforms.t_camera_lidar
         projection_matrix = transforms.camera_projection_matrix
-
-        # # Construct homogeneous point cloud for projecting into image frame
-        # homogeneous_point_cloud = point_cloud[:, :3]
-        # homogeneous_point_cloud = np.hstack(
-        #     (point_cloud[:, :3], np.ones((point_cloud.shape[0], 1)))
-        # )
-        #
-        # # Transform homogeneous point cloud to camera frame
-        # point_cloud_camera_frame = t_camera_lidar.dot(homogeneous_point_cloud.T).T
-        #
-        # # Remove points behind the camera
-        # forward_mask = point_cloud_camera_frame[:, 2] > 0
-        # point_cloud_camera_frame = point_cloud_camera_frame[forward_mask]
-        #
-        # # Get UV coordinates for points.
-        # uvs = self.project_points(projection_matrix, point_cloud_camera_frame)
-        #
-        # # Remove points outside camera bounds
-        # outside_frame_mask = (
-        #     (uvs[:, 0] >= 0)
-        #     & (uvs[:, 0] < image.shape[1])
-        #     & (uvs[:, 1] >= 0)
-        #     & (uvs[:, 1] < image.shape[0])
-        # )
-        # uvs = uvs[outside_frame_mask]
-        #
-        # # Get combined mask
-        # combined_mask = forward_mask & outside_frame_mask
-        #
-        # # Get the indices of all points in the cloud that are in front of the
-        # # camera and project into the image frame
-        # painted_points_indices = np.where(combined_mask)[0]
-        #
-        # return uvs, painted_points_indices
 
         # Convert tensors to the same device and dtype (float32)
         device = point_cloud.device
@@ -179,16 +162,18 @@ class PointPainting:
         # Check points inside image frame
         inside_mask = (
             (uvs[:, 0] >= 0)
-            & (uvs[:, 0] < image.shape[2])  # image width at dim 2
+            & (uvs[:, 0] < image.shape[1])  # image width at dim 1
             & (uvs[:, 1] >= 0)
-            & (uvs[:, 1] < image.shape[1])  # image height at dim 1
+            & (uvs[:, 1] < image.shape[0])  # image height at dim 0
         )
 
         uvs = uvs[inside_mask]
 
         # Combine masks to get original indices
         forward_indices = torch.nonzero(forward_mask, as_tuple=False).squeeze(1)
-        painted_points_indices = forward_indices[inside_mask]
+        # painted_points_indices = forward_indices[inside_mask]
+        inside_indices = torch.nonzero(inside_mask, as_tuple=False).squeeze(1)
+        painted_points_indices = forward_indices[inside_indices]
 
         return uvs, painted_points_indices
 
@@ -207,27 +192,12 @@ class PointPainting:
                 camera image.
         """
 
-        # assert points.shape[-1] == 4
-        #
-        # # Remove points behind the camera
-        # points = points[points[:, 2] > 0.0]
-        # uvs = None
-        #
-        # uvs = np.empty((points.shape[0], 2), dtype=int)
-        # for i in range(points.shape[0]):
-        #     projected = projection_matrix @ points[i, :]
-        #     uvs[i, :] = (np.round(projected[:2] / projected[-1])).astype(int)
-        #
-        # assert uvs.dtype == int
-        #
-        # return uvs
-
-        # points shape: [N,4]
         # project points
         projected = (projection_matrix @ points.T).T  # [N,4]
 
         # Normalize by the last coordinate
-        uvs = projected[:, :2] / projected[:, 3:].clamp(min=1e-6)  # avoid div by zero
+        # uvs = projected[:, :2] / projected[:, -1].clamp(min=1e-6)  # avoid div by zero
+        uvs = projected[:, :2] / projected[:, -1].unsqueeze(1)
 
         # Round and convert to int
         uvs = torch.round(uvs).to(torch.int64)  # [N,2]
@@ -245,11 +215,20 @@ class PointPainting:
                 predictions for the classes car, person, bicycle, and other.
         """
 
+        # Ensure the model is on the correct device
+        self.model.to(image.device)
+
+        # Convert to PIL image after reordering dimensions appropriately
+        # pil_image = to_pil_image(image.permute(2, 0, 1))
+
         # Apply image preprocessing transforms
-        image_preprocessed = self.preprocess(image).unsqueeze(0)
+        # image_preprocessed = self.preprocess(pil_image).unsqueeze(0)
+        # image_preprocessed = self.preprocess(image).unsqueeze(0)
+        image_preprocessed = self.preprocess(image.permute(2, 0, 1)).unsqueeze(0)
 
         # Run image through model (Output is shape (batch_size, 21, H, W))
-        prediction = self.model(image_preprocessed)["out"]
+        with torch.no_grad():
+            prediction = self.model(image_preprocessed)["out"]
         normalized_predictions = torch.nn.functional.softmax(prediction, dim=1)
 
         # Indices of car, pedestrian, and bicycle respectively in the pretrained
@@ -264,6 +243,7 @@ class PointPainting:
         ]
 
         # Discard predictions for other classes
+        # Model output has shape (batch_size, classes, H, W)
         relevant_predictions = normalized_predictions[:, relevant_indices, :, :]
 
         # Calculate weight of all other classes as the difference between 1.0 and
@@ -272,5 +252,9 @@ class PointPainting:
 
         # Final output. Shape is (batch_size, 4, H, W)
         output = torch.cat([relevant_predictions, other], dim=1)
+
+        # NOTE: Remember to remove this when done testing
+        # torch.save(image.permute(2, 0, 1).cpu(), "raw_image.pt")
+        # torch.save(output.cpu(), "classes.pt")
 
         return output
