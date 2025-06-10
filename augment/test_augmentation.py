@@ -7,8 +7,8 @@ from augmentation import DataAugmenter, load_kitti_calib
 from validation_visualizer import create_validation_plot, split_cloud
 
 # We can now test on more frames to see the variety.
-FRAMES     = ["00100", "00242", "00376", "00550", "00816", "01100", "01450", "01900", "02300", "03500", "04000", "04500", "05000", "06000", "06500", "07000", "07500", "08000", "08500", "09000", "09500"]
-OBJ_DICT   = Path.home() / "final_assignment" / "Advanced-Machine-Perception" / "object_dict.pkl"
+FRAMES     = ["00100", "00242", "00376", "00550", "00816", "01100", "01450", "01900", "02300", "03500", "04000", "04500", "05000", "07000", "07500", "08500", "09000"]
+OBJ_DICT   = Path.home() / "final_assignment" / "object_dict.pkl"
 DATA_ROOT  = Path.home() / "final_assignment" / "data" / "view_of_delft"
 AUG_DIR    = Path.home() / "final_assignment" / "augmented_frames"
 FIG_DIR    = Path.home() / "final_assignment" / "tests" / "figures"
