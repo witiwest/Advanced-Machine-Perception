@@ -148,7 +148,7 @@ def sample_pose_by_class(cls: str, rng, sampler_pool: np.ndarray):
     # Class-Specific heuristics and dead zones
     if cls == "Car":
         # Enforce a "dead zone" immediately around the ego-vehicle for cars.
-        if -5 < x < 5:
+        if x < 5 or x > 30 or y > 0.5 * x or y < -0.5 * x:
             return None, None, None 
 
         # Cars should have an orientation aligned with the road
@@ -160,7 +160,7 @@ def sample_pose_by_class(cls: str, rng, sampler_pool: np.ndarray):
 
     elif cls == "Pedestrian" or cls == "Cyclist":
         # Pedestrians and cyclists can be closer, but not right on top of the car
-        if -2 < x < 2:
+        if x < 2 or x > 30 or y > 0.5 * x or y < -0.5 * x:
             return None, None, None # Reject if too close
 
         # Pedestrians can face any way, cyclists are mostly forward
@@ -301,6 +301,14 @@ class DataAugmenter:
 
             # Apply noise for robustness
             pts = apply_noise_to_object(pts, rng)
+            point_count = len(pts)
+            if point_count > 150:
+                preferred_range = (2, 15)
+            elif point_count > 80:
+                preferred_range = (10, 25)
+            else:
+                preferred_range = (20, 35)
+            print(f"Trying to insert {cls} with {point_count} points...")
 
             if len(pts) == 0: 
                 continue # All points were dropped, try again
@@ -313,6 +321,9 @@ class DataAugmenter:
 
             # if sampler rejected the pose
             if x is None:
+                continue
+
+            if not (preferred_range[0] < np.linalg.norm([x, y]) < preferred_range[1]):
                 continue
 
             # Calculate the Z-height directly from the global plane equation

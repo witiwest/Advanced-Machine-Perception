@@ -40,10 +40,12 @@ class ViewOfDelft(Dataset):
         ),  # 3D object location x,y,z in camera coordinates (in meters).
         "bbox3d_rotation": 14,  # Rotation around -Z-axis in LiDAR coordinates [-pi..pi].
     }
-
-    def __init__(
-        self, data_root="data/view_of_delft", sequential_loading=False, split="train"
-    ):
+    
+    def __init__(self, 
+                 data_root = 'data/view_of_delft', 
+                 sequential_loading=False,
+                 split = 'train',
+                 augmentation_pipeline = None):
         super().__init__()
 
         self.data_root = data_root
@@ -60,6 +62,8 @@ class ViewOfDelft(Dataset):
             self.sample_list = [line.strip() for line in lines]
 
         self.vod_kitti_locations = KittiLocations(root_dir=data_root)
+        self.augmenter = augmentation_pipeline
+
 
     def __len__(self):
         return len(self.sample_list)
@@ -75,7 +79,26 @@ class ViewOfDelft(Dataset):
 
         gt_labels_3d_list = []
         gt_bboxes_3d_list = []
-        if self.split != "test":
+
+        if self.augmenter and self.split == 'train':
+            calib_dict = {
+                "P2": vod_frame_data.kitti_calib.P2,
+                "Tr_velo_to_cam": vod_frame_data.kitti_calib.T_camera_lidar,
+                "R0_rect": vod_frame_data.kitti_calib.R_rect_00
+            }
+            data_sample_for_aug = {
+                'pc': vod_frame_data.lidar_data.copy(),
+                'labels': vod_frame_data.raw_labels.copy(),
+                'calib': calib_dict
+            }
+            augmented_sample = self.augmenter(data_sample_for_aug)
+            lidar_data = augmented_sample['pc']
+            raw_labels = augmented_sample['labels']
+        else:
+            lidar_data = vod_frame_data.lidar_data
+            raw_labels = vod_frame_data.raw_labels
+
+        if self.split != 'test':
             raw_labels = vod_frame_data.raw_labels
             for idx, label in enumerate(raw_labels):
                 label = label.split(" ")

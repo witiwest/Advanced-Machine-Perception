@@ -295,6 +295,7 @@ for i, (pc, raw_anns, velo_ann_list) in enumerate(zip(training_data, [open(p).re
             continue
         if len(pts_in_box) <= 8:
             continue  # Skip empty boxes
+
         
         entry = {
             'points': pts_in_box,
