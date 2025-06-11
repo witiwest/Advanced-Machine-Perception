@@ -304,8 +304,9 @@ class DataAugmenter:
         with open(cfg.obj_db_path, "rb") as f:
             self.obj_db = pickle.load(f)
         
-        self.augmentation_prob = cfg.prob
-        self.max_trials = cfg.max_trials
+        self.cfg = cfg
+        self.augmentation_prob = self.cfg.prob
+        self.max_trials = self.cfg.max_trials
         self.classes_to_augment = list(self.obj_db.keys())
         self.rng = np.random.default_rng()
         print(f"Data Augmenter initialized. Augmenting with: {self.classes_to_augment}")
@@ -337,15 +338,42 @@ class DataAugmenter:
             loc_velo = (Tr_cam_to_velo @ np.array([x_c, y_c, z_c, 1.0]))[:3]
             scene_boxes.append(Box(loc_velo[0], loc_velo[1], loc_velo[2], l_c, w_c, h_c, -(ry_c + np.pi/2)))
 
-        # Call the core insertion logic
-        pc_aug, lab_aug, _, ok = self._perform_insertion(
-            pc, labels, self.obj_db, cls_to_insert, scene_boxes, calib, self.rng, global_plane_params, sampler_pool)
+        # Multi-object insertion loop
+        num_placed = 0
+        print(f"Attempting Augmentation for Frame")
+        if self.cfg.multi_object.enabled:
+            max_objects = self.cfg.multi_object.max_objects
+            for i in range(max_objects):
+                # Check probability of attempting this insertion
+                print(f"  [Attempt {i+1}/{max_objects}]")
+                if self.rng.random() > self.cfg.multi_object.attempt_probs[i]:
+                    break 
+                
+                print(f"Probabilistic check passed. Trying to insert object #{i+1}...")
+                cls_to_insert = self.rng.choice(self.classes_to_augment)
+                
+                # Call our existing insertion logic. Note that we pass the current state
+                # of pc, labels, and scene_boxes to it.
+                pc_new, labels_new, scene_boxes_new, ok = self._perform_insertion(
+                    pc, labels, self.obj_db, cls_to_insert, scene_boxes, calib, self.rng, global_plane_params, sampler_pool)
 
-        # If successful, update the data_sample. Otherwise, return the original.
-        if ok:
-            data_sample['pc'] = pc_aug
-            data_sample['labels'] = lab_aug
-        
+                if ok:
+                    print(f"SUCCESS: Placed a '{cls_to_insert}'. Updating scene state for next attempt.")
+                    # Update the state for the next iteration
+                    pc = pc_new
+                    labels = labels_new
+                    scene_boxes = scene_boxes_new
+                    num_placed += 1
+                else:
+                    print(f"FAILURE: No valid pose found after {self.max_trials} trials. Scene may be too crowded. Stopping.")
+                    # If one attempt fails, we assume the scene is too crowded and stop.
+                    break
+        print(f"Finished Augmentation. Total objects placed: {num_placed}")
+        # If at least one object was successfully placed, update the final data sample
+        if num_placed > 0:
+            data_sample['pc'] = pc
+            data_sample['labels'] = labels
+    
         return data_sample
     
     def _perform_insertion(self, pc, labels, obj_db, cls, scene_boxes, calib_dict, rng, global_plane_params, sampler_pool):
@@ -360,7 +388,7 @@ class DataAugmenter:
         if not donors:
             return pc, labels, scene_boxes, False
         
-        original_scene_pc_for_occlusion = pc.copy()
+        original_scene_pc = pc.copy()
 
         # Main loop to try multiple random poses
         for _ in range(self.max_trials):
@@ -410,20 +438,15 @@ class DataAugmenter:
             box = Box(x, y, z, l, w, h, yaw)
 
             # Validation checks
-            if not is_placement_realistic(box, cls, pc):                    
+            if not is_placement_realistic(box, cls, original_scene_pc):                    
                 continue
             
             if any(boxes_overlap(box, b) for b in scene_boxes):             
                 continue
             
-            points_in_box_indices = get_points_in_box(pc, box)
+            points_in_box_indices = get_points_in_box(original_scene_pc, box)
             if len(points_in_box_indices) > 5:                              
                 continue
-            # Check if the object is occluded by other points in the scene
-            
-            # Hole cutting an paste object
-
-            pc = np.delete(pc, points_in_box_indices, axis=0)
 
             Rz = np.array([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw),  np.cos(yaw), 0], [0, 0, 1]], np.float32)
             centroid_xy = np.mean(pts[:, :2], axis=0)
@@ -432,14 +455,15 @@ class DataAugmenter:
             pts[:, 2] -= z_min_donor
             pts[:, :3] = (Rz @ pts[:, :3].T).T
             pts[:, :3] += np.array([x, y, global_ground_z])
-            print(f"len(pts) before:{len(pts)}")
-            pts, occluded_points = is_line_of_sight_clear(pc, pts, margin=0.05)
-            print(f"len(pts) after:{len(pts)}")
+
+            # print(f"len(pts) before:{len(pts)}")
+            pts, occluded_points = is_line_of_sight_clear(original_scene_pc, pts, margin=0.05)
+            # print(f"len(pts) after:{len(pts)}")
             if len(occluded_points) > len(pts):
                 continue
             if len(pts) == 0: 
                 continue
-            pc = remove_occluded_points(pc, np.array([x, y, z]), (w, l, h))
+            pc_after_occlusion = remove_occluded_points(original_scene_pc, np.array([x, y, z]), (w, l, h))
 
             # Finalize point cloud and labels
             if pts.shape[1] == 3: 
@@ -449,20 +473,22 @@ class DataAugmenter:
             sem_idx = {"Car": 1, "Pedestrian": 2, "Cyclist": 3}.get(cls, 4)
             sem[:, sem_idx] = 1.0
 
-            if pc.shape[1] == 4:
-                base_sem = np.zeros((pc.shape[0], 5), np.float32) 
+            if pc_after_occlusion.shape[1] == 4:
+                base_sem = np.zeros((pc_after_occlusion.shape[0], 5), np.float32) 
                 base_sem[:, 0] = 1.0
-                pc = np.hstack([pc, base_sem])
+                pc_final = np.hstack([pc_after_occlusion, base_sem])
+            else:
+                pc_final = pc_after_occlusion
 
             pts = np.hstack([pts, sem])
-            print(f"len(pc), len(pts) before:{len(pc)}, {len(pts)}")
-            pc = np.vstack([pc, pts])
-            print(f"len(pc):{len(pc)}")
+            # print(f"len(pc), len(pts) before:{len(pc_final)}, {len(pts)}")
+            pc_final = np.vstack([pc_final, pts])
+            # print(f"len(pc):{len(pc_final)}")
             labels.append(label)
             scene_boxes.append(box)
 
             # Valid pose was found
-            return pc, labels, scene_boxes, True 
+            return pc_final, labels, scene_boxes, True 
         
         # Max trials reached, no success
         return pc, labels, scene_boxes, False

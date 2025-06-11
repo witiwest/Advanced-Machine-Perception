@@ -2,19 +2,18 @@ from pathlib import Path
 import numpy as np
 import os
 
-# 1. Import our clean augmenter and all necessary visualization/utility tools
 from augmentation import DataAugmenter, load_kitti_calib
 from validation_visualizer import create_validation_plot, split_cloud
+from omegaconf import OmegaConf
 
 # We can now test on more frames to see the variety.
 FRAMES     = ["00100", "00242", "00376", "00550", "00816", "01100", "01450", "01900", "02300", "03500", "04000", "04500", "05000", "07000", "07500", "08500", "09000"]
-OBJ_DICT   = Path.home() / "final_assignment" / "object_dict.pkl"
+OBJ_DICT   = Path.home() / "final_assignment" / "common_src" / "object_dict.pkl"
 DATA_ROOT  = Path.home() / "final_assignment" / "data" / "view_of_delft"
 AUG_DIR    = Path.home() / "final_assignment" / "augmented_frames"
 FIG_DIR    = Path.home() / "final_assignment" / "tests" / "figures"
 AUG_DIR.mkdir(parents=True, exist_ok=True)
 FIG_DIR.mkdir(parents=True, exist_ok=True)
-
 
 def save_point_cloud(p, pts): 
     """Saves a point cloud array to a .bin file."""
@@ -26,9 +25,25 @@ def save_labels(p, lines):
 
 
 if __name__ == "__main__":
-    # Initialize the augmenter. It will now default to using all available classes.
     print("Running in DEBUG mode")
-    augmenter = DataAugmenter(obj_db_path=OBJ_DICT, augmentation_prob=1.0)
+
+    copy_paste_config = OmegaConf.create({
+    'obj_db_path': str(OBJ_DICT),
+    'prob': 1.0,  # Always attempt to augment the scene
+    'max_trials': 50, # Max attempts to place EACH object
+
+    # --- ADD THIS SECTION TO ENABLE MULTI-OBJECT INSERTION ---
+    'multi_object': {
+        'enabled': True,
+        # The maximum number of objects the script will try to add
+        'max_objects': 2,
+        # The probability of attempting to add the Nth object.
+        # e.g., 100% for 1st, 80% for 2nd, 30% for 3rd.
+        'attempt_probs': [1.0, 0.8]
+    }
+})
+
+    augmenter = DataAugmenter(cfg=copy_paste_config)
 
     for frame in FRAMES:
         print(f"\nProcessing frame {frame}...")
@@ -63,15 +78,17 @@ if __name__ == "__main__":
             print(f"Saved augmented data to {aug_bin_path.name} and {aug_label_path.name}")
 
             # Generate the validation plot
-            orig_xyz, ins_xyz = split_cloud(augmented_sample['pc'])
-            val_plot_path = FIG_DIR / f"{frame}_{added_class.lower()}_validation.png"
+            orig_xyz, inserted_objects_list = split_cloud(augmented_sample['pc'])
+            num_inserted = len(inserted_objects_list)
+            added_classes_summary = f"{num_inserted}_objects"
+            val_plot_path = FIG_DIR / f"{frame}_{added_classes_summary}_validation.png"
             create_validation_plot(
                 original_xyz=orig_xyz,
-                inserted_xyz=ins_xyz,
+                inserted_objects=inserted_objects_list, # Pass the list of objects
                 image_path=rgb_path,
                 calib=calib,
                 save_path=val_plot_path,
-                obj_class=added_class
+                obj_class=added_classes_summary # Pass the summary string for the title
             )
         else:
             print("Augmentation attempt failed (no valid pose found).")

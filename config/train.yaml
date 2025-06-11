@@ -20,6 +20,14 @@ augmentation:
     prob: 0.8  
     max_trials: 50
 
+    multi_object:
+      enabled: true
+      # The maximum number of objects to try and add
+      max_objects: 3
+      # The probability of attempting to add the Nth object.
+      # 100% chance to try for the 1st, 70% for the 2nd, 40% for the 3rd.
+      attempt_probs: [1.0, 0.7, 0.4]
+
   # Configuration for the final "Global transformations"
   global_transforms:
     enabled: true
