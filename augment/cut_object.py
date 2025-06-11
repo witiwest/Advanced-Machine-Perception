@@ -249,7 +249,7 @@ calib_data_dir = os.path.join(_BASE, 'calib')
 
 # SELECT 100 RANDOM POINT CLOUDS TO EXTRACT OBJECTS FROM
 all_txt = sorted(glob.glob(os.path.join(label_data_dir, '*.txt')))
-random_txt = random.sample(all_txt, 500) 
+random_txt = random.sample(all_txt, 1500) 
 
 random_bin   = []
 random_calib = []

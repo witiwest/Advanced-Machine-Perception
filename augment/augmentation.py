@@ -297,16 +297,16 @@ def save_labels(p, lines):
 
 
 class DataAugmenter:
-    def __init__(self, obj_db_path: str, augmentation_prob: float = 0.8, max_trials: int = 50):
+    def __init__(self, cfg):
         """
         Initializes the on-the-fly data augmenter. This is done ONCE per training run.
         """
-        with open(obj_db_path, "rb") as f:
+        with open(cfg.obj_db_path, "rb") as f:
             self.obj_db = pickle.load(f)
         
-        self.augmentation_prob = augmentation_prob
-        self.max_trials = max_trials
-        self.classes_to_augment = list(self.obj_db.keys())[0:3:2]
+        self.augmentation_prob = cfg.prob
+        self.max_trials = cfg.max_trials
+        self.classes_to_augment = list(self.obj_db.keys())
         self.rng = np.random.default_rng()
         print(f"Data Augmenter initialized. Augmenting with: {self.classes_to_augment}")
 
@@ -378,7 +378,7 @@ class DataAugmenter:
                 preferred_range = (15, 25)
             else:
                 preferred_range = (25, 35)
-            print(f"Trying to insert {cls} with {point_count} points...")
+            # print(f"Trying to insert {cls} with {point_count} points...")
 
 
             if len(pts) == 0: 

@@ -8,6 +8,9 @@ from torch.utils.data import Dataset
 from vod.configuration import KittiLocations
 from vod.frame import FrameDataLoader, FrameTransformMatrix, homogeneous_transformation
 
+from common_src.augment.augmentation import DataAugmenter, load_kitti_calib
+from common_src.augment.utils import apply_global_transformations
+from pathlib import Path
 
 class ViewOfDelft(Dataset):
     CLASSES = [
@@ -45,7 +48,7 @@ class ViewOfDelft(Dataset):
                  data_root = 'data/view_of_delft', 
                  sequential_loading=False,
                  split = 'train',
-                 augmentation_pipeline = None):
+                 augmentation_cfg=None):
         super().__init__()
 
         self.data_root = data_root
@@ -60,9 +63,18 @@ class ViewOfDelft(Dataset):
         with open(split_file, "r") as f:
             lines = f.readlines()
             self.sample_list = [line.strip() for line in lines]
+        
+        self.vod_kitti_locations = KittiLocations(root_dir = data_root)
 
-        self.vod_kitti_locations = KittiLocations(root_dir=data_root)
-        self.augmenter = augmentation_pipeline
+        self.augmentation_cfg = augmentation_cfg
+        self.augmenter = None
+        self.global_augment_cfg = None
+
+        if augmentation_cfg and augmentation_cfg.enabled and self.split == 'train':
+            if augmentation_cfg.copy_paste.enabled:
+                self.augmenter = DataAugmenter(cfg=augmentation_cfg.copy_paste)
+            if augmentation_cfg.global_transforms.enabled:
+                self.global_augment_cfg = augmentation_cfg.global_transforms 
 
 
     def __len__(self):
@@ -77,29 +89,29 @@ class ViewOfDelft(Dataset):
 
         lidar_data = vod_frame_data.lidar_data
 
-        gt_labels_3d_list = []
-        gt_bboxes_3d_list = []
-
-        if self.augmenter and self.split == 'train':
-            calib_dict = {
-                "P2": vod_frame_data.kitti_calib.P2,
-                "Tr_velo_to_cam": vod_frame_data.kitti_calib.T_camera_lidar,
-                "R0_rect": vod_frame_data.kitti_calib.R_rect_00
-            }
-            data_sample_for_aug = {
+        # Apply object augmentation and insert
+        if self.augmenter: 
+            calib_dir = self.vod_kitti_locations.lidar_calib_dir
+            calib_path = os.path.join(calib_dir, f"{num_frame}.txt")
+            calib_dict = load_kitti_calib(Path(calib_path))
+            data_sample = {
                 'pc': vod_frame_data.lidar_data.copy(),
                 'labels': vod_frame_data.raw_labels.copy(),
                 'calib': calib_dict
             }
-            augmented_sample = self.augmenter(data_sample_for_aug)
+            augmented_sample = self.augmenter(data_sample)
             lidar_data = augmented_sample['pc']
             raw_labels = augmented_sample['labels']
         else:
             lidar_data = vod_frame_data.lidar_data
             raw_labels = vod_frame_data.raw_labels
 
+        lidar_data = lidar_data[:, :4]
+
+        gt_labels_3d_list = []
+        gt_bboxes_3d_list = []
         if self.split != 'test':
-            raw_labels = vod_frame_data.raw_labels
+            # raw_labels = vod_frame_data.raw_labels // check if this is a bug later
             for idx, label in enumerate(raw_labels):
                 label = label.split(" ")
 
@@ -114,42 +126,38 @@ class ViewOfDelft(Dataset):
                     )
                     trans_homo_cam = np.ones((1, 4))
                     trans_homo_cam[:, :3] = bbox3d_loc_camera
-                    bbox3d_loc_lidar = homogeneous_transformation(
-                        trans_homo_cam, local_transforms.t_lidar_camera
-                    )
-
-                    bbox3d_locs = np.array(bbox3d_loc_lidar[0, :3], dtype=np.float32)
-                    bbox3d_dims = np.array(
-                        label[self.LABEL_MAPPING["bbox3d_dimensions"]], dtype=np.float32
-                    )[
-                        [2, 1, 0]
-                    ]  # hwl -> lwh
-                    bbox3d_rot = np.array(
-                        [label[self.LABEL_MAPPING["bbox3d_rotation"]]], dtype=np.float32
-                    )
-
-                    gt_bboxes_3d_list.append(
-                        np.concatenate([bbox3d_locs, bbox3d_dims, bbox3d_rot], axis=0)
-                    )
-
-        lidar_data = torch.tensor(lidar_data)
-
-        if gt_bboxes_3d_list == []:
-            gt_labels_3d = np.array([0])
-            gt_bboxes_3d = np.zeros((1, 7))
+                    bbox3d_loc_lidar = homogeneous_transformation(trans_homo_cam, local_transforms.t_lidar_camera)
+                    
+                    bbox3d_locs = np.array(bbox3d_loc_lidar[0,:3], dtype=np.float32)         
+                    bbox3d_dims = np.array(label[self.LABEL_MAPPING['bbox3d_dimensions']], dtype=np.float32)[[2, 1, 0]] # hwl -> lwh
+                    bbox3d_rot = np.array([label[self.LABEL_MAPPING['bbox3d_rotation']]], dtype=np.float32)
+                
+                    gt_bboxes_3d_list.append(np.concatenate([bbox3d_locs, bbox3d_dims, bbox3d_rot], axis=0))
+        
+        if not gt_bboxes_3d_list:
+            gt_labels_3d_np = np.array([], dtype=np.int64)
+            gt_bboxes_3d_np = np.zeros((0, 7), dtype=np.float32)
         else:
-            gt_labels_3d = np.array(gt_labels_3d_list, dtype=np.int64)
-            gt_bboxes_3d = np.stack(gt_bboxes_3d_list, axis=0)
+            gt_labels_3d_np = np.array(gt_labels_3d_list, dtype=np.int64)
+            gt_bboxes_3d_np = np.stack(gt_bboxes_3d_list, axis=0)
 
+        if self.global_augment_cfg:
+            scaling = np.random.uniform(*self.global_augment_cfg.scaling_range)
+            rotation = np.random.uniform(*self.global_augment_cfg.rotation_range)
+            lidar_data, gt_bboxes_3d_np = apply_global_transformations(
+                lidar_data, gt_bboxes_3d_np, rotation, scaling
+            )
+
+        gt_labels_3d = torch.from_numpy(gt_labels_3d_np)
+        gt_bboxes_3d = torch.from_numpy(gt_bboxes_3d_np)
+        
         gt_bboxes_3d = LiDARInstance3DBoxes(
-            gt_bboxes_3d, box_dim=gt_bboxes_3d.shape[-1], origin=(0.5, 0.5, 0)
-        )
-
-        gt_labels_3d = torch.tensor(gt_labels_3d)
-
-        # image_data = vod_frame_data.image
-        image_data = torch.tensor(vod_frame_data.image)
-
+            gt_bboxes_3d,
+            box_dim=gt_bboxes_3d.shape[-1],
+            origin=(0.5, 0.5, 0))
+        
+        lidar_data = torch.tensor(lidar_data)
+        
         return dict(
             lidar_data=lidar_data,
             image_data=image_data,
