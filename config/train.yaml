@@ -16,7 +16,7 @@ augmentation:
   # Configuration for the "Copy-paste" (object insertion)
   copy_paste:
     enabled: true
-    obj_db_path: ${hydra:runtime.cwd}/object_dict.pkl
+    obj_db_path: ${hydra:runtime.cwd}/common_src/object_dict.pkl
     prob: 0.8  
     max_trials: 50
 
