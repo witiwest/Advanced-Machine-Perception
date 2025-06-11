@@ -98,32 +98,38 @@ def boxes_overlap(a: Box, b: Box, m_xy=0.01, m_z=0.01):
     z_ok = abs(a.z - b.z) < (a.h + b.h) / 2 + m_z
     return z_ok and _overlap_bev(a, b, m_xy)
 
-# realistic-placement helpers
-def is_line_of_sight_clear(pc: np.ndarray, object: np.ndarray, margin=0.5, voxel_size=0.3, num_ray_samples=5):
+
     
+def build_voxel_hash(points, voxel_size):
+    """Returns a set of voxel keys occupied by points."""
+    keys = np.floor(points / voxel_size).astype(np.int32)
+    return {tuple(k) for k in keys}
 
-    tree = KDTree(pc[:, :3] if pc.shape[1] > 3 else pc)
+def get_voxel_key(point, voxel_size):
+    return tuple(np.floor(point / voxel_size).astype(np.int32))
 
-    visible_points = []
-    occluded_points = []
+def is_line_of_sight_clear(pc: np.ndarray, object: np.ndarray, margin=0.05, num_ray_samples=200):
+    pc_xyz = pc[:, :3] if pc.shape[1] > 3 else pc
+    voxel_set = build_voxel_hash(pc_xyz, margin)
+
+    visible, occluded = [], []
 
     for point in object:
         norm = np.linalg.norm(point)
         if norm < 1e-8:
-            visible_points.append(point)
+            visible.append(point)
             continue
 
         ray_samples = point * np.linspace(0.1, 0.9, num_ray_samples)[:, None]
-        occluded = any(len(tree.query_ball_point(sample, margin)) > 0 for sample in ray_samples)
+        ray_voxels = [get_voxel_key(s, margin) for s in ray_samples]
 
-        if occluded:
-            occluded_points.append(point)
+        if any(v in voxel_set for v in ray_voxels):
+            occluded.append(point)
         else:
-            occlusion_mask.append(True)
-    
-    occlusion_mask = np.array(occlusion_mask)
-    # print(f"Occlusion mask: {occlusion_mask.sum()} points are clear, {len(occlusion_mask) - occlusion_mask.sum()} are occlusion.")
-    return object[occlusion_mask], object[~occlusion_mask]
+            visible.append(point)
+
+    print(f"{len(visible)} points are clear, {len(occluded)} are occluded.")
+    return np.array(visible), np.array(occluded)
 
 def get_data_driven_sampler_pool(pc: np.ndarray):
     """
@@ -202,7 +208,7 @@ def get_points_in_box(pc: np.ndarray, box: Box):
                   (np.abs(rotated_points[:, 2]) < box.h / 2)
     return np.where(in_box_mask)[0]
 
-def remove_occluded_points(pc: np.ndarray, box_center: np.ndarray, box_dims: tuple, sensor_origin=np.array([0,0,0])):
+def remove_occluded_points(pc: np.ndarray, aabb_min: np.ndarray, aabb_max: np.ndarray, sensor_origin=np.array([0.0, 0.0, 0.0])):
     """
     Remove points occluded by the inserted object along LoS from sensor.
     
@@ -217,56 +223,42 @@ def remove_occluded_points(pc: np.ndarray, box_center: np.ndarray, box_dims: tup
     """
 
     # Calculate corners of the box in XY plane (assuming axis aligned)
-    w, l, _ = box_dims
-    x_c, y_c, _ = box_center
-    
-    # Corners in XY
+    x0, y0 = aabb_min
+    x1, y1 = aabb_max
     corners = np.array([
-        [x_c - w/2, y_c - l/2],
-        [x_c - w/2, y_c + l/2],
-        [x_c + w/2, y_c - l/2],
-        [x_c + w/2, y_c + l/2]
-    ])
+        [x0, y0],
+        [x0, y1],
+        [x1, y1],
+        [x1, y0],
+    ], dtype=float)  # shape (4,2)
     
-    # Compute angles from sensor to corners
-    vectors_to_corners = corners - sensor_origin[:2]
-    angles_corners = np.arctan2(vectors_to_corners[:,1], vectors_to_corners[:,0])
-    
-    min_angle = angles_corners.min()
-    max_angle = angles_corners.max()
+    # 2) angles & ranges of corners
+    vecs = corners - sensor_origin[:2]    # (4,2)
+    corner_angles = np.arctan2(vecs[:,1], vecs[:,0])  # (4,)
+    corner_ranges = np.linalg.norm(vecs, axis=1)      # (4,)
 
-    # Convert points to polar coordinates relative to sensor
-    points_xy = pc[:, :2] - sensor_origin[:2]
-    points_ranges = np.linalg.norm(points_xy, axis=1)
-    points_angles = np.arctan2(points_xy[:,1], points_xy[:,0])
-    
-    # Normalize angles to [-pi, pi]
-    def normalize_angle(a):
-        return (a + np.pi) % (2 * np.pi) - np.pi
+    # normalize to [-pi,pi]
+    def norm(a): return (a + np.pi) % (2*np.pi) - np.pi
+    corner_angles = norm(corner_angles)
+    min_ang, max_ang = corner_angles.min(), corner_angles.max()
+    near_range = corner_ranges.min()  # distance to the nearest bbox corner
 
-    points_angles = normalize_angle(points_angles)
-    min_angle = normalize_angle(min_angle)
-    max_angle = normalize_angle(max_angle)
+    # 3) scene pts in polar
+    pts_xy = pc[:, :2] - sensor_origin[:2]
+    pt_angles = norm(np.arctan2(pts_xy[:,1], pts_xy[:,0]))
+    pt_ranges = np.linalg.norm(pts_xy, axis=1)
 
-    # Check if point angle is inside the box angular range (handle wrap-around)
-    if min_angle < max_angle:
-        inside_angular = (points_angles >= min_angle) & (points_angles <= max_angle)
+    # 4) build the angular mask (handles wrap-around)
+    if min_ang < max_ang:
+        in_sector = (pt_angles >= min_ang) & (pt_angles <= max_ang)
     else:
-        # Wrap around case
-        inside_angular = (points_angles >= min_angle) | (points_angles <= max_angle)
+        in_sector = (pt_angles >= min_ang) | (pt_angles <= max_ang)
 
-    # Approximate distance from sensor to box surface along each angle:
-    # For simplicity, approximate box range as distance to box center minus half diagonal (for safety)
-    box_diag = np.sqrt(w**2 + l**2)/2
-    box_range = np.linalg.norm(box_center[:2] - sensor_origin[:2]) - box_diag
-    
-    # Points inside angular sector AND farther than box_range are occluded
-    occluded_mask = inside_angular & (points_ranges > box_range)
-    
-    # Remove occluded points
-    filtered_pc = pc[~occluded_mask]
+    # 5) anything in that wedge and farther than the near corner is occluded
+    occluded = in_sector & (pt_ranges > near_range + 1e-6)
 
-    return filtered_pc
+    # 6) filter out occluded
+    return pc[~occluded]
 
 def _read_12(line):
     """Convert 'tag: 12 floats' into (3,4) array."""
@@ -464,7 +456,7 @@ class DataAugmenter:
                 continue
             if len(pts) == 0: 
                 continue
-            pc_after_occlusion = remove_occluded_points(original_scene_pc, np.array([x, y, z]), (w, l, h))
+            pc_after_occlusion = remove_occluded_points(original_scene_pc, pts[:, :2].min(0), pts[:, :2].max(0))
 
             # Finalize point cloud and labels
             if pts.shape[1] == 3: 
