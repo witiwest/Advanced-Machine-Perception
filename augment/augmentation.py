@@ -119,10 +119,11 @@ def is_line_of_sight_clear(pc: np.ndarray, object: np.ndarray, margin=0.5, voxel
         if occluded:
             occluded_points.append(point)
         else:
-            visible_points.append(point)
-
-    print(f"{len(visible_points)} points are clear, {len(occluded_points)} are occluded.")
-    return np.array(visible_points), np.array(occluded_points)
+            occlusion_mask.append(True)
+    
+    occlusion_mask = np.array(occlusion_mask)
+    # print(f"Occlusion mask: {occlusion_mask.sum()} points are clear, {len(occlusion_mask) - occlusion_mask.sum()} are occlusion.")
+    return object[occlusion_mask], object[~occlusion_mask]
 
 def get_data_driven_sampler_pool(pc: np.ndarray):
     """
@@ -340,16 +341,16 @@ class DataAugmenter:
 
         # Multi-object insertion loop
         num_placed = 0
-        print(f"Attempting Augmentation for Frame")
+        # print(f"Attempting Augmentation for Frame")
         if self.cfg.multi_object.enabled:
             max_objects = self.cfg.multi_object.max_objects
             for i in range(max_objects):
                 # Check probability of attempting this insertion
-                print(f"  [Attempt {i+1}/{max_objects}]")
+                # print(f"  [Attempt {i+1}/{max_objects}]")
                 if self.rng.random() > self.cfg.multi_object.attempt_probs[i]:
                     break 
                 
-                print(f"Probabilistic check passed. Trying to insert object #{i+1}...")
+                # print(f"Probabilistic check passed. Trying to insert object #{i+1}...")
                 cls_to_insert = self.rng.choice(self.classes_to_augment)
                 
                 # Call our existing insertion logic. Note that we pass the current state
@@ -358,17 +359,17 @@ class DataAugmenter:
                     pc, labels, self.obj_db, cls_to_insert, scene_boxes, calib, self.rng, global_plane_params, sampler_pool)
 
                 if ok:
-                    print(f"SUCCESS: Placed a '{cls_to_insert}'. Updating scene state for next attempt.")
+                    # print(f"SUCCESS: Placed a '{cls_to_insert}'. Updating scene state for next attempt.")
                     # Update the state for the next iteration
                     pc = pc_new
                     labels = labels_new
                     scene_boxes = scene_boxes_new
                     num_placed += 1
                 else:
-                    print(f"FAILURE: No valid pose found after {self.max_trials} trials. Scene may be too crowded. Stopping.")
+                    # print(f"FAILURE: No valid pose found after {self.max_trials} trials. Scene may be too crowded. Stopping.")
                     # If one attempt fails, we assume the scene is too crowded and stop.
                     break
-        print(f"Finished Augmentation. Total objects placed: {num_placed}")
+        # print(f"Finished Augmentation. Total objects placed: {num_placed}")
         # If at least one object was successfully placed, update the final data sample
         if num_placed > 0:
             data_sample['pc'] = pc
