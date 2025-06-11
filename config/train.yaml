@@ -17,8 +17,8 @@ augmentation:
   copy_paste:
     enabled: true
     obj_db_path: ${hydra:runtime.cwd}/common_src/object_dict.pkl
-    prob: 0.8  
-    max_trials: 50
+    prob: 0.7  
+    max_trials: 15
 
     multi_object:
       enabled: true
