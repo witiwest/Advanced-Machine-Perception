@@ -9,6 +9,23 @@ exp_id: ${model.name}_ep_${epochs}
 data_root: data/view_of_delft
 output_dir: outputs/${exp_id}
 
+augmentation:
+  enabled: true
+
+  add_semantic_channels: false 
+  # Configuration for the "Copy-paste" (object insertion)
+  copy_paste:
+    enabled: true
+    obj_db_path: ${hydra:runtime.cwd}/object_dict.pkl
+    prob: 0.8  
+    max_trials: 50
+
+  # Configuration for the final "Global transformations"
+  global_transforms:
+    enabled: true
+    rotation_range: [-0.785, 0.785] # Radians (-45 to +45 degrees)
+    scaling_range: [0.95, 1.05]
+
 checkpoint_path:
 
 class_namses: ['Car', 'Pedestrian', 'Cyclist']
