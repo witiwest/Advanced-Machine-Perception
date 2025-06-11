@@ -98,52 +98,37 @@ def boxes_overlap(a: Box, b: Box, m_xy=0.01, m_z=0.01):
     return z_ok and _overlap_bev(a, b, m_xy)
 
 # realistic-placement helpers
-def is_line_of_sight_clear(pc: np.ndarray, object: np.ndarray, margin=0.25):
+def is_line_of_sight_clear(pc: np.ndarray, object: np.ndarray, margin=0.5):
     """
-    Checks if the line of sight from origin (0,0,0) to a target point
-    is clear of other points in the point cloud.
+    Removes points in 'object' that are occluded by points in 'pc'
+    when viewed from the origin (0, 0, 0).
     """
-    direction = point / (np.linalg.norm(point) + 1e-6)
-    # Project all scene points onto the ray direction vector
-    projections = pc[:,:3] @ direction
-    
-    # Get the distance of the target point along the ray
-    point_dist = np.linalg.norm(point)
-    
-    # Select scene points that are "in front" of the target point
-    relevant_points = pc[(projections > 0) & (projections < point_dist)]
-    if len(relevant_points) == 0:
-        return True # Nothing is in front
+    occlusion_mask = []
+    for point in object:
+        norm = np.linalg.norm(point)
+        if norm < 1e-8:
+            occlusion_mask.append(True)
+            continue
         
-    # For those points, find their perpendicular distance to the ray
-    # If any point is close to the ray, the LoS is blocked
-    perp_distances = np.linalg.norm(relevant_points[:,:3] - 
-                                   (relevant_points[:,:3] @ direction)[:, np.newaxis] * direction, axis=1)
+        direction = point / norm
+        projections = pc[:, :3] @ direction
+        point_dist = norm
+        
+        # Filter points in front of origin and closer than target point
+        mask = (projections > 0) & (projections < point_dist)
+        relevant_points = pc[mask]
+        relevant_projections = projections[mask]
 
-    return not np.any(perp_distances < margin)
-
-def apply_partial_occlusion(pasted_pts, scene_pc, rng):
-    """
-    Simulates partial occlusion by removing points from the pasted object that are
-    occluded by points in the original scene.
-    """
-    # We don't need to check every single point, which can be slow.
-    # We can check a random subset for efficiency.
-    num_to_check = min(len(pasted_pts), 200) # Check up to 200 points
-    check_indices = rng.choice(len(pasted_pts), size=num_to_check, replace=False)
-
-    # The point's line of sight is checked against the original scene
-    is_visible_mask = np.ones(len(pasted_pts), dtype=bool)
-
-    for idx in check_indices:
-        point_to_check = pasted_pts[idx, :3]
-        if not is_line_of_sight_clear(scene_pc, point_to_check):
-            # If the LoS is blocked, we can assume points near it are also blocked.
-            # This is an optimization to avoid checking every single point.
-            distances = np.linalg.norm(pasted_pts[:,:3] - point_to_check, axis=1)
-            is_visible_mask[distances < 0.2] = False # Mark nearby points as not visible
-
-    return pasted_pts[is_visible_mask]
+        ray_points = np.outer(relevant_projections, direction)
+        distances = np.linalg.norm(relevant_points[:, :3] - ray_points, axis=1)
+        if np.any(distances < margin):
+            occlusion_mask.append(False)
+        else:
+            occlusion_mask.append(True)
+    
+    occlusion_mask = np.array(occlusion_mask)
+    print(f"Occlusion mask: {occlusion_mask.sum()} points are clear, {len(occlusion_mask) - occlusion_mask.sum()} are occlusion.")
+    return object[occlusion_mask], object[~occlusion_mask]
 
 def get_data_driven_sampler_pool(pc: np.ndarray):
     """
@@ -327,7 +312,7 @@ class DataAugmenter:
         
         self.augmentation_prob = augmentation_prob
         self.max_trials = max_trials
-        self.classes_to_augment = list(self.obj_db.keys())
+        self.classes_to_augment = list(self.obj_db.keys())[0:3:2]
         self.rng = np.random.default_rng()
         print(f"Data Augmenter initialized. Augmenting with: {self.classes_to_augment}")
 
@@ -441,10 +426,9 @@ class DataAugmenter:
             if len(points_in_box_indices) > 5:                              
                 continue
             # Check if the object is occluded by other points in the scene
-            # pts = is_line_of_sight_clear(pc, pts, margin=0.05)
-            if len(pts) == 0: 
-                continue
+            
             # Hole cutting an paste object
+
             pc = np.delete(pc, points_in_box_indices, axis=0)
 
             Rz = np.array([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw),  np.cos(yaw), 0], [0, 0, 1]], np.float32)
@@ -454,10 +438,14 @@ class DataAugmenter:
             pts[:, 2] -= z_min_donor
             pts[:, :3] = (Rz @ pts[:, :3].T).T
             pts[:, :3] += np.array([x, y, global_ground_z])
-
-            # pts = apply_partial_occlusion(pts, original_scene_pc_for_occlusion, rng) 
-            # if len(pts) < 10:
-            #     continue
+            print(f"len(pts) before:{len(pts)}")
+            pts, occluded_points = is_line_of_sight_clear(pc, pts, margin=0.05)
+            print(f"len(pts) after:{len(pts)}")
+            if len(occluded_points) > len(pts):
+                continue
+            if len(pts) == 0: 
+                continue
+            pc = remove_occluded_points(pc, np.array([x, y, z]), (w, l, h))
 
             # Finalize point cloud and labels
             if pts.shape[1] == 3: 
@@ -473,7 +461,9 @@ class DataAugmenter:
                 pc = np.hstack([pc, base_sem])
 
             pts = np.hstack([pts, sem])
+            print(f"len(pc), len(pts) before:{len(pc)}, {len(pts)}")
             pc = np.vstack([pc, pts])
+            print(f"len(pc):{len(pc)}")
             labels.append(label)
             scene_boxes.append(box)
 
