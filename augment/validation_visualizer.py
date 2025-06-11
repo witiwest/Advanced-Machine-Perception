@@ -79,7 +79,7 @@ def create_validation_plot(
     1. Left: Bird's-Eye-View (BEV) of the pasted object.
     2. Right: Camera overlay with the pasted object and its 3D bbox.
     """
-    fig, (ax_bev, ax_cam) = plt.subplots(1, 2, figsize=(22, 7))
+    fig, (ax_bev, ax_cam) = plt.subplots(1, 2, figsize=(15, 7))
     plot_title = f"Validation for Frame: {image_path.stem} | Pasted: {obj_class}"
     fig.suptitle(plot_title, fontsize=16)
 

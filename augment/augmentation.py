@@ -5,6 +5,7 @@ import random
 import pickle
 import os
 import glob
+from scipy.spatial import KDTree
 
 Box = namedtuple("Box", "x y z l w h yaw")
 
@@ -98,37 +99,30 @@ def boxes_overlap(a: Box, b: Box, m_xy=0.01, m_z=0.01):
     return z_ok and _overlap_bev(a, b, m_xy)
 
 # realistic-placement helpers
-def is_line_of_sight_clear(pc: np.ndarray, object: np.ndarray, margin=0.5):
-    """
-    Removes points in 'object' that are occluded by points in 'pc'
-    when viewed from the origin (0, 0, 0).
-    """
-    occlusion_mask = []
+def is_line_of_sight_clear(pc: np.ndarray, object: np.ndarray, margin=0.5, voxel_size=0.3, num_ray_samples=5):
+    
+
+    tree = KDTree(pc[:, :3] if pc.shape[1] > 3 else pc)
+
+    visible_points = []
+    occluded_points = []
+
     for point in object:
         norm = np.linalg.norm(point)
         if norm < 1e-8:
-            occlusion_mask.append(True)
+            visible_points.append(point)
             continue
-        
-        direction = point / norm
-        projections = pc[:, :3] @ direction
-        point_dist = norm
-        
-        # Filter points in front of origin and closer than target point
-        mask = (projections > 0) & (projections < point_dist)
-        relevant_points = pc[mask]
-        relevant_projections = projections[mask]
 
-        ray_points = np.outer(relevant_projections, direction)
-        distances = np.linalg.norm(relevant_points[:, :3] - ray_points, axis=1)
-        if np.any(distances < margin):
-            occlusion_mask.append(False)
+        ray_samples = point * np.linspace(0.1, 0.9, num_ray_samples)[:, None]
+        occluded = any(len(tree.query_ball_point(sample, margin)) > 0 for sample in ray_samples)
+
+        if occluded:
+            occluded_points.append(point)
         else:
-            occlusion_mask.append(True)
-    
-    occlusion_mask = np.array(occlusion_mask)
-    print(f"Occlusion mask: {occlusion_mask.sum()} points are clear, {len(occlusion_mask) - occlusion_mask.sum()} are occlusion.")
-    return object[occlusion_mask], object[~occlusion_mask]
+            visible_points.append(point)
+
+    print(f"{len(visible_points)} points are clear, {len(occluded_points)} are occluded.")
+    return np.array(visible_points), np.array(occluded_points)
 
 def get_data_driven_sampler_pool(pc: np.ndarray):
     """
