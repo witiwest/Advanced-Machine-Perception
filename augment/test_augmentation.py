@@ -30,7 +30,7 @@ if __name__ == "__main__":
     copy_paste_config = OmegaConf.create({
     'obj_db_path': str(OBJ_DICT),
     'prob': 1.0,  # Always attempt to augment the scene
-    'max_trials': 50, # Max attempts to place EACH object
+    'max_trials': 40, # Max attempts to place EACH object
 
     # --- ADD THIS SECTION TO ENABLE MULTI-OBJECT INSERTION ---
     'multi_object': {

@@ -8,7 +8,7 @@ import glob
 
 Box = namedtuple("Box", "x y z l w h yaw")
 
-def fit_global_ground_plane_ransac(pc: np.ndarray, iters=100, eps=0.1):
+def fit_global_ground_plane_ransac(pc: np.ndarray, iters=50, eps=0.1):
     """
     Fits a single, global ground plane to the entire scene using RANSAC.
 
@@ -109,7 +109,7 @@ def build_voxel_hash(points, voxel_size):
 def get_voxel_key(point, voxel_size):
     return tuple(np.floor(point / voxel_size).astype(np.int32))
 
-def is_line_of_sight_clear(voxel_set, object_pts, margin=0.05, num_ray_samples=200):
+def is_line_of_sight_clear(voxel_set, object_pts, margin=0.05, num_ray_samples=90):
     visible, occluded = [], []
     for point in object_pts:
         norm = np.linalg.norm(point)
@@ -201,47 +201,47 @@ def get_points_in_box(pc: np.ndarray, box: Box):
                   (np.abs(rotated_points[:, 2]) < box.h / 2)
     return np.where(in_box_mask)[0]
 
-def remove_occluded_points(pc: np.ndarray, box: Box, sensor_origin=np.array([0.0, 0.0, 0.0])):
+def remove_points_occluded_by_boxes(pc: np.ndarray, boxes: list, sensor_origin=np.array([0.0, 0.0, 0.0])):
     """
-    Removes points from the scene 'pc' that are occluded by a given 3D box.
-    This version correctly handles rotated boxes.
+    Removes points from the scene 'pc' that are occluded by a LIST of 3D boxes.
+    It pre-computes scene information once, making it faster.
     """
-    # 1. Get the 2D corners of the rotated box
-    corners = _corners_2d(box) # _corners_2d is a helper we already have!
+    if not boxes:
+        return pc
 
-    # 2. Find the min/max angles of the box's corners from the sensor's perspective
-    vectors_to_corners = corners - sensor_origin[:2]
-    corner_angles = np.arctan2(vectors_to_corners[:, 1], vectors_to_corners[:, 0])
-    
-    # Normalize angles to [-pi, pi] for correct min/max finding
-    min_angle = np.min(corner_angles)
-    max_angle = np.max(corner_angles)
-    
-    # Handle the angle-wrap around case (e.g., from -170deg to +170deg)
-    if max_angle - min_angle > np.pi:
-        # The sector crosses the -pi/pi boundary, so we swap
-        min_angle, max_angle = max_angle, min_angle
-
-    # 3. Get the distance to the NEAREST corner of the box
-    box_range = np.min(np.linalg.norm(vectors_to_corners, axis=1))
-
-    # 4. Get angles and ranges for all points in the scene
+    # 
+    # Calculate angles and ranges for all scene points once.
     points_xy = pc[:, :2] - sensor_origin[:2]
     point_ranges = np.linalg.norm(points_xy, axis=1)
     point_angles = np.arctan2(points_xy[:, 1], points_xy[:, 0])
 
-    # 5. Identify points that are occluded
-    if min_angle < max_angle:
-        # Standard case: check if point angle is between min and max
-        inside_angular_sector = (point_angles >= min_angle) & (point_angles <= max_angle)
-    else:
-        # Wrap-around case: check if angle is greater than min OR smaller than max
-        inside_angular_sector = (point_angles >= min_angle) | (point_angles <= max_angle)
+    # This will be our final mask of all points to be removed
+    master_occluded_mask = np.zeros(len(pc), dtype=bool)
 
-    # A point is occluded if it's inside the angular sector AND farther than the box
-    occluded_mask = inside_angular_sector & (point_ranges > box_range)
-    
-    return pc[~occluded_mask]
+    for box in boxes:
+        # Get the angular sector and range for this specific box
+        corners = _corners_2d(box)
+        vectors_to_corners = corners - sensor_origin[:2]
+        corner_angles = np.arctan2(vectors_to_corners[:, 1], vectors_to_corners[:, 0])
+        
+        min_angle, max_angle = np.min(corner_angles), np.max(corner_angles)
+        if max_angle - min_angle > np.pi:
+            min_angle, max_angle = max_angle, min_angle
+
+        box_range = np.min(np.linalg.norm(vectors_to_corners, axis=1))
+
+        # Identify points occluded by THIS box
+        if min_angle < max_angle:
+            in_sector = (point_angles >= min_angle) & (point_angles <= max_angle)
+        else:
+            in_sector = (point_angles >= min_angle) | (point_angles <= max_angle)
+        
+        occluded_by_this_box = in_sector & (point_ranges > box_range)
+        
+        # Add these points to our master occlusion mask
+        master_occluded_mask |= occluded_by_this_box
+
+    return pc[~master_occluded_mask]
 
 def _read_12(line):
     """Convert 'tag: 12 floats' into (3,4) array."""
@@ -296,10 +296,10 @@ class DataAugmenter:
         labels = data_sample['labels'].copy()
         calib = data_sample['calib']
         
-        # Pre-computation for efficiency
+        # Pre computation for efficiency
         global_plane_params = fit_global_ground_plane_ransac(pc)
         sampler_pool = get_data_driven_sampler_pool(pc)
-        scene_voxel_set = build_voxel_hash(pc[:, :3], voxel_size=0.05)
+        scene_voxel_set = build_voxel_hash(pc[:, :3], voxel_size=0.1)
         
         Tr_cam_to_velo = np.linalg.inv(np.vstack([calib["Tr_velo_to_cam"], [0, 0, 0, 1]]))
         scene_boxes = []
@@ -327,30 +327,31 @@ class DataAugmenter:
                     global_plane_params, sampler_pool, scene_voxel_set)
 
                 if new_object_data:
-                    new_pts, new_label, new_box = new_object_data
-                    successfully_placed_objects.append({'pts': new_pts, 'label': new_label, 'box': new_box})
-                    scene_boxes.append(new_box)
+                    successfully_placed_objects.append(new_object_data)
+                    scene_boxes.append(new_object_data[2])
                 else:
                     break
         
         # Final scene composition
         if successfully_placed_objects:
-            final_pc = pc.copy()
-            for obj in successfully_placed_objects:
-                final_pc = remove_occluded_points(final_pc, obj['box'])
+            # Get the list of boxes that were successfully placed
+            final_boxes = [obj[2] for obj in successfully_placed_objects]
+            # Perform background occlusion for ALL new objects in one pass
+            final_pc = remove_points_occluded_by_boxes(pc, final_boxes)
 
             if final_pc.shape[1] == 4:
                 sem_base = np.zeros((final_pc.shape[0], 5), dtype=np.float32); 
                 sem_base[:, 0] = 1.0
                 final_pc = np.hstack([final_pc, sem_base])
 
-            for obj in successfully_placed_objects:
-                final_pc = np.vstack([final_pc, obj['pts']])
-                labels.append(obj['label'])
+            # Stack all the new object points and update labels
+            for new_pts, new_label, _ in successfully_placed_objects:
+                final_pc = np.vstack([final_pc, new_pts])
+                labels.append(new_label)
             
             data_sample['pc'] = final_pc
             data_sample['labels'] = labels
-    
+
         return data_sample
     
     def _perform_insertion(self, original_pc, obj_db, cls, scene_boxes, rng, global_plane_params, sampler_pool, scene_voxel_set):
