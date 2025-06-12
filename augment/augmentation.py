@@ -109,28 +109,20 @@ def build_voxel_hash(points, voxel_size):
 def get_voxel_key(point, voxel_size):
     return tuple(np.floor(point / voxel_size).astype(np.int32))
 
-def is_line_of_sight_clear(pc: np.ndarray, object: np.ndarray, margin=0.10, num_ray_samples=100):
-    pc_xyz = pc[:, :3] if pc.shape[1] > 3 else pc
-    voxel_set = build_voxel_hash(pc_xyz, margin)
-
+def is_line_of_sight_clear(voxel_set, object_pts, margin=0.05, num_ray_samples=200):
     visible, occluded = [], []
-
-    for point in object:
+    for point in object_pts:
         norm = np.linalg.norm(point)
         if norm < 1e-8:
-            visible.append(point)
-            continue
-
+            visible.append(point); continue
         ray_samples = point * np.linspace(0.1, 0.9, num_ray_samples)[:, None]
-        ray_voxels = [get_voxel_key(s, margin) for s in ray_samples]
-
-        if any(v in voxel_set for v in ray_voxels):
-            occluded.append(point)
-        else:
+        ray_voxels = {get_voxel_key(s, margin) for s in ray_samples}
+        if not ray_voxels.intersection(voxel_set):
             visible.append(point)
-
-    print(f"{len(visible)} points are clear, {len(occluded)} are occluded.")
-    return np.array(visible), np.array(occluded)
+        else:
+            occluded.append(point)
+    return np.array(visible) if visible else np.empty((0, object_pts.shape[1])), \
+           np.array(occluded) if occluded else np.empty((0, object_pts.shape[1]))
 
 def get_data_driven_sampler_pool(pc: np.ndarray):
     """
@@ -209,57 +201,47 @@ def get_points_in_box(pc: np.ndarray, box: Box):
                   (np.abs(rotated_points[:, 2]) < box.h / 2)
     return np.where(in_box_mask)[0]
 
-def remove_occluded_points(pc: np.ndarray, aabb_min: np.ndarray, aabb_max: np.ndarray, sensor_origin=np.array([0.0, 0.0, 0.0])):
+def remove_occluded_points(pc: np.ndarray, box: Box, sensor_origin=np.array([0.0, 0.0, 0.0])):
     """
-    Remove points occluded by the inserted object along LoS from sensor.
-    
-    Args:
-        pc: (N,4) LiDAR points
-        box_center: (3,) center of inserted object
-        box_dims: (width, length, height) of object
-        sensor_origin: sensor coordinates (default at origin)
-    
-    Returns:
-        filtered_pc: points with occluded points removed
+    Removes points from the scene 'pc' that are occluded by a given 3D box.
+    This version correctly handles rotated boxes.
     """
+    # 1. Get the 2D corners of the rotated box
+    corners = _corners_2d(box) # _corners_2d is a helper we already have!
 
-    # Calculate corners of the box in XY plane (assuming axis aligned)
-    x0, y0 = aabb_min
-    x1, y1 = aabb_max
-    corners = np.array([
-        [x0, y0],
-        [x0, y1],
-        [x1, y1],
-        [x1, y0],
-    ], dtype=float)  # shape (4,2)
+    # 2. Find the min/max angles of the box's corners from the sensor's perspective
+    vectors_to_corners = corners - sensor_origin[:2]
+    corner_angles = np.arctan2(vectors_to_corners[:, 1], vectors_to_corners[:, 0])
     
-    # 2) angles & ranges of corners
-    vecs = corners - sensor_origin[:2]    # (4,2)
-    corner_angles = np.arctan2(vecs[:,1], vecs[:,0])  # (4,)
-    corner_ranges = np.linalg.norm(vecs, axis=1)      # (4,)
+    # Normalize angles to [-pi, pi] for correct min/max finding
+    min_angle = np.min(corner_angles)
+    max_angle = np.max(corner_angles)
+    
+    # Handle the angle-wrap around case (e.g., from -170deg to +170deg)
+    if max_angle - min_angle > np.pi:
+        # The sector crosses the -pi/pi boundary, so we swap
+        min_angle, max_angle = max_angle, min_angle
 
-    # normalize to [-pi,pi]
-    def norm(a): return (a + np.pi) % (2*np.pi) - np.pi
-    corner_angles = norm(corner_angles)
-    min_ang, max_ang = corner_angles.min(), corner_angles.max()
-    near_range = corner_ranges.min()  # distance to the nearest bbox corner
+    # 3. Get the distance to the NEAREST corner of the box
+    box_range = np.min(np.linalg.norm(vectors_to_corners, axis=1))
 
-    # 3) scene pts in polar
-    pts_xy = pc[:, :2] - sensor_origin[:2]
-    pt_angles = norm(np.arctan2(pts_xy[:,1], pts_xy[:,0]))
-    pt_ranges = np.linalg.norm(pts_xy, axis=1)
+    # 4. Get angles and ranges for all points in the scene
+    points_xy = pc[:, :2] - sensor_origin[:2]
+    point_ranges = np.linalg.norm(points_xy, axis=1)
+    point_angles = np.arctan2(points_xy[:, 1], points_xy[:, 0])
 
-    # 4) build the angular mask (handles wrap-around)
-    if min_ang < max_ang:
-        in_sector = (pt_angles >= min_ang) & (pt_angles <= max_ang)
+    # 5. Identify points that are occluded
+    if min_angle < max_angle:
+        # Standard case: check if point angle is between min and max
+        inside_angular_sector = (point_angles >= min_angle) & (point_angles <= max_angle)
     else:
-        in_sector = (pt_angles >= min_ang) | (pt_angles <= max_ang)
+        # Wrap-around case: check if angle is greater than min OR smaller than max
+        inside_angular_sector = (point_angles >= min_angle) | (point_angles <= max_angle)
 
-    # 5) anything in that wedge and farther than the near corner is occluded
-    occluded = in_sector & (pt_ranges > near_range + 1e-6)
-
-    # 6) filter out occluded
-    return pc[~occluded]
+    # A point is occluded if it's inside the angular sector AND farther than the box
+    occluded_mask = inside_angular_sector & (point_ranges > box_range)
+    
+    return pc[~occluded_mask]
 
 def _read_12(line):
     """Convert 'tag: 12 floats' into (3,4) array."""
@@ -307,184 +289,148 @@ class DataAugmenter:
         print(f"Data Augmenter initialized. Augmenting with: {self.classes_to_augment}")
 
     def __call__(self, data_sample: dict):
-        """
-        The main method called by the data loader for each sample.
-        """
-        # Randomly decide whether to augment this scene at all
-        if self.rng.random() > self.augmentation_prob:
+        if self.rng.random() > self.cfg.prob:
             return data_sample
 
-        # Prepare data for augmentation
         pc = data_sample['pc'].copy()
         labels = data_sample['labels'].copy()
         calib = data_sample['calib']
-        cls_to_insert = self.rng.choice(self.classes_to_augment)
-
-        # Perform pre-computations needed for insertion
+        
+        # Pre-computation for efficiency
         global_plane_params = fit_global_ground_plane_ransac(pc)
         sampler_pool = get_data_driven_sampler_pool(pc)
+        scene_voxel_set = build_voxel_hash(pc[:, :3], voxel_size=0.05)
+        
         Tr_cam_to_velo = np.linalg.inv(np.vstack([calib["Tr_velo_to_cam"], [0, 0, 0, 1]]))
         scene_boxes = []
         for ln in labels:
-            p = ln.split()
-            if p[0] not in ['Car', 'Pedestrian', 'Cyclist']: 
+            p = ln.split(' ')
+            if p[0] not in self.classes_to_augment: 
                 continue
-            h_c, w_c, l_c = map(float, p[8:11]); x_c, y_c, z_c = map(float, p[11:14]); ry_c = float(p[14])
-            loc_velo = (Tr_cam_to_velo @ np.array([x_c, y_c, z_c, 1.0]))[:3]
-            scene_boxes.append(Box(loc_velo[0], loc_velo[1], loc_velo[2], l_c, w_c, h_c, -(ry_c + np.pi/2)))
+            h, w, l = map(float, p[8:11]); 
+            x, y , z = map(float, p[11:14]); 
+            ry = float(p[14])
+            loc_velo = (Tr_cam_to_velo @ np.array([x, y , z , 1.0]))[:3]
+            scene_boxes.append(Box(loc_velo[0], loc_velo[1], loc_velo[2], l , w , h, -(ry+np.pi/2)))
 
-        # Multi-object insertion loop
-        num_placed = 0
-        # print(f"Attempting Augmentation for Frame")
+        # Multi-object insertion loop 
+        successfully_placed_objects = []
         if self.cfg.multi_object.enabled:
-            max_objects = self.cfg.multi_object.max_objects
-            for i in range(max_objects):
-                # Check probability of attempting this insertion
-                # print(f"  [Attempt {i+1}/{max_objects}]")
-                if self.rng.random() > self.cfg.multi_object.attempt_probs[i]:
-                    break 
-                
-                # print(f"Probabilistic check passed. Trying to insert object #{i+1}...")
+            for i in range(self.cfg.multi_object.max_objects):
+                if self.rng.random() > self.cfg.multi_object.attempt_probs[i]: 
+                    break
                 cls_to_insert = self.rng.choice(self.classes_to_augment)
                 
-                # Call our existing insertion logic. Note that we pass the current state
-                # of pc, labels, and scene_boxes to it.
-                pc_new, labels_new, scene_boxes_new, ok = self._perform_insertion(
-                    pc, labels, self.obj_db, cls_to_insert, scene_boxes, calib, self.rng, global_plane_params, sampler_pool)
+                # _perform_insertion gets the pre-computed voxel set
+                new_object_data = self._perform_insertion(
+                    pc, self.obj_db, cls_to_insert, scene_boxes, self.rng, 
+                    global_plane_params, sampler_pool, scene_voxel_set)
 
-                if ok:
-                    # print(f"SUCCESS: Placed a '{cls_to_insert}'. Updating scene state for next attempt.")
-                    # Update the state for the next iteration
-                    
-                    pc = pc_new
-                    labels = labels_new
-                    scene_boxes = scene_boxes_new
-                    num_placed += 1
+                if new_object_data:
+                    new_pts, new_label, new_box = new_object_data
+                    successfully_placed_objects.append({'pts': new_pts, 'label': new_label, 'box': new_box})
+                    scene_boxes.append(new_box)
                 else:
-                    # print(f"FAILURE: No valid pose found after {self.max_trials} trials. Scene may be too crowded. Stopping.")
-                    # If one attempt fails, we assume the scene is too crowded and stop.
                     break
-        # print(f"Finished Augmentation. Total objects placed: {num_placed}")
-        # If at least one object was successfully placed, update the final data sample
-        if num_placed > 0:
-            data_sample['pc'] = pc
+        
+        # Final scene composition
+        if successfully_placed_objects:
+            final_pc = pc.copy()
+            for obj in successfully_placed_objects:
+                final_pc = remove_occluded_points(final_pc, obj['box'])
+
+            if final_pc.shape[1] == 4:
+                sem_base = np.zeros((final_pc.shape[0], 5), dtype=np.float32); 
+                sem_base[:, 0] = 1.0
+                final_pc = np.hstack([final_pc, sem_base])
+
+            for obj in successfully_placed_objects:
+                final_pc = np.vstack([final_pc, obj['pts']])
+                labels.append(obj['label'])
+            
+            data_sample['pc'] = final_pc
             data_sample['labels'] = labels
     
         return data_sample
     
-    def _perform_insertion(self, pc, labels, obj_db, cls, scene_boxes, calib_dict, rng, global_plane_params, sampler_pool):
-        """
-        Selects a donor object and attempts to place it onto the pre-computed global ground plane.
-        """
-        # This check is crucial: if no global plane was found, we can't do anything.
-        if global_plane_params is None:
-            return pc, labels, scene_boxes, False
-
-        donors = obj_db.get(cls, [])
-        if not donors:
-            return pc, labels, scene_boxes, False
+    def _perform_insertion(self, original_pc, obj_db, cls, scene_boxes, rng, global_plane_params, sampler_pool, scene_voxel_set):
         
-        original_scene_pc = pc.copy()
-
-        # Main loop to try multiple random poses
-        for _ in range(self.max_trials):
-            
-            # Random object selection for variety 
-            ent = rng.choice(donors)
-            pts = ent["points"].copy()
-
-            # Apply noise for robustness
+        if global_plane_params is None: 
+            return None
+        
+        donors = obj_db.get(cls, [])
+        if not donors: 
+            return None
+        
+        for _ in range(self.cfg.max_trials):
+            ent = rng.choice(donors); 
+            pts = ent["points"].copy(); 
             pts = apply_noise_to_object(pts, rng)
-            point_count = len(pts)
-            if point_count > 150:
-                preferred_range = (2, 15)
-            elif point_count > 80:
-                preferred_range = (15, 25)
-            else:
-                preferred_range = (25, 35)
-            # print(f"Trying to insert {cls} with {point_count} points...")
 
+            if len(pts) < 10: 
+                continue
 
-            if len(pts) == 0: 
-                continue # All points were dropped, try again
-
-            label = ent["label"]
-            h, w, l = map(float, label.split()[8:11])
+            original_point_count = len(pts); 
+            label=ent["label"]
+            h, w, l=map(float, label.split()[8:11]); 
             z_min_donor = pts[:, 2].min()
-
             x, y, yaw = sample_pose_by_class(cls, rng, sampler_pool)
 
-            # if sampler rejected the pose
-            if x is None:
+            if x is None: 
                 continue
+            
+            # Dynamic range check
+            point_count = len(pts)
+            if point_count > 150: 
+                preferred_range=(2,15)
+            elif point_count > 80: 
+                preferred_range=(15,25)
+            else: 
+                preferred_range=(25,35)
 
-            if not (preferred_range[0] < np.linalg.norm([x, y]) < preferred_range[1]):
+            if not(preferred_range[0]<np.linalg.norm([x,y])<preferred_range[1]): 
                 continue
-
-            # Calculate the Z-height directly from the global plane equation
+            
             a, b, c, d = global_plane_params
-            # Check for a near-zero 'c' to avoid division by zero if the plane is vertical
-            if abs(c) < 1e-6:
+
+            if abs(c)<1e-6: 
                 continue
 
-            global_ground_z = -(a * x + b * y + d) / c
-
-            # Final object position
-            z = global_ground_z + (h / 2) - z_min_donor
+            global_ground_z= -(a * x + b * y + d)/ c
+            z = global_ground_z + (h/2) - z_min_donor
             box = Box(x, y, z, l, w, h, yaw)
 
-            # Validation checks
-            if not is_placement_realistic(box, cls, original_scene_pc):                    
+            # validation checks
+            if not is_placement_realistic(box,cls,original_pc): 
+                continue
+            if any(boxes_overlap(box,b) for b in scene_boxes): 
+                continue
+            if len(get_points_in_box(original_pc,box))>5: 
                 continue
             
-            if any(boxes_overlap(box, b) for b in scene_boxes):             
+            # Transform, then check partial occlusion
+            Rz = np.array([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw), np.cos(yaw), 0], [0, 0, 1]], np.float32)
+            centroid_xy = np.mean(pts[:,:2], axis=0)
+            pts[:, 0] -= centroid_xy[0]; 
+            pts[:,1] -= centroid_xy[1]; 
+            pts[:,2] -= z_min_donor
+            pts[:,:3] = (Rz@pts[:,:3].T).T
+            pts[:,:3] += np.array([x,y,global_ground_z])
+            
+            # Call the optimized occlusion check
+            pts, _ = is_line_of_sight_clear(scene_voxel_set, pts, margin=0.05)
+
+            if len(pts) < original_point_count*0.3: 
                 continue
             
-            points_in_box_indices = get_points_in_box(original_scene_pc, box)
-            if len(points_in_box_indices) > 5:                              
-                continue
-
-            Rz = np.array([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw),  np.cos(yaw), 0], [0, 0, 1]], np.float32)
-            centroid_xy = np.mean(pts[:, :2], axis=0)
-            pts[:, 0] -= centroid_xy[0]
-            pts[:, 1] -= centroid_xy[1]
-            pts[:, 2] -= z_min_donor
-            pts[:, :3] = (Rz @ pts[:, :3].T).T
-            pts[:, :3] += np.array([x, y, global_ground_z])
-
-            # print(f"len(pts) before:{len(pts)}")
-            pts, occluded_points = is_line_of_sight_clear(original_scene_pc, pts, margin=0.05)
-            # print(f"len(pts) after:{len(pts)}")
-            if len(occluded_points) > len(pts):
-                continue
-            if len(pts) == 0: 
-                continue
-            pc_after_occlusion = remove_occluded_points(original_scene_pc, pts[:, :2].min(0), pts[:, :2].max(0))
-
-            # Finalize point cloud and labels
+            # Add semantic channels and return the finished object
             if pts.shape[1] == 3: 
                 pts = np.hstack([pts, 0.5 * np.ones((pts.shape[0], 1), dtype=np.float32)])
+            sem_pts = np.zeros((pts.shape[0], 5), np.float32)
+            sem_idx = {"Car": 1,"Pedestrian": 2,"Cyclist": 3}.get(cls, 4)
+            sem_pts[:,sem_idx] = 1.0
+            pts = np.hstack([pts, sem_pts])
+            
+            return pts, label, box
 
-            sem = np.zeros((pts.shape[0], 5), np.float32)
-            sem_idx = {"Car": 1, "Pedestrian": 2, "Cyclist": 3}.get(cls, 4)
-            sem[:, sem_idx] = 1.0
-
-            if pc_after_occlusion.shape[1] == 4:
-                base_sem = np.zeros((pc_after_occlusion.shape[0], 5), np.float32) 
-                base_sem[:, 0] = 1.0
-                pc_final = np.hstack([pc_after_occlusion, base_sem])
-            else:
-                pc_final = pc_after_occlusion
-
-            pts = np.hstack([pts, sem])
-            # print(f"len(pc), len(pts) before:{len(pc_final)}, {len(pts)}")
-            pc_final = np.vstack([pc_final, pts])
-            # print(f"len(pc):{len(pc_final)}")
-            labels.append(label)
-            scene_boxes.append(box)
-
-            # Valid pose was found
-            return pc_final, labels, scene_boxes, True 
-        
-        # Max trials reached, no success
-        return pc, labels, scene_boxes, False
+        return None
