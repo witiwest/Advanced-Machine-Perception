@@ -3,31 +3,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 
+from augmentation import _corners_2d, Box
+
+CLASS_COLOR_MAP = {
+    'Car': 'red',
+    'Pedestrian': 'lime',
+    'Cyclist': 'cyan',
+    'Other': 'magenta'
+}
+CLASSES = ['Car', 'Pedestrian', 'Cyclist', 'Other']
+
 # Geometry and Projection Helpers
-
-def split_cloud(augmented_pc: np.ndarray):
-    """
-    Splits the augmented point cloud into original points and a LIST of
-    inserted objects, with each object as a separate point cloud.
-    """
-    if augmented_pc.shape[1] < 9:
-        return augmented_pc[:, :3], []
-
-    # Original points are still identified the same way
-    original_mask = augmented_pc[:, 4] == 1.0
-    orig_xyz = augmented_pc[original_mask, :3]
-
-    # For inserted points, we now group them by class
-    inserted_objects = []
-    # Find the unique classes that were inserted (indices 1 to 4)
-    inserted_class_indices = np.unique(np.where(augmented_pc[~original_mask, 5:9] == 1.0)[1]) + 1
-
-    for class_idx in inserted_class_indices:
-        # Get all points belonging to this specific inserted object class instance
-        instance_mask = augmented_pc[:, 4+class_idx] == 1.0
-        inserted_objects.append(augmented_pc[instance_mask, :3])
-
-    return orig_xyz, inserted_objects
 
 def project_velo_to_image(xyz_velo: np.ndarray, calib: dict):
     """ Projects (N,3) LiDAR points to (N,2) pixel coordinates. """
@@ -49,15 +35,20 @@ def project_velo_to_image(xyz_velo: np.ndarray, calib: dict):
     pix[~valid] = np.nan
     return pix
 
-def make_axis_aligned_bbox(pts_velo: np.ndarray) -> np.ndarray:
-    """ Builds an axis-aligned 3D box from a point cluster in the Velodyne frame. """
-    if pts_velo.shape[0] == 0: return np.array([])
-    xmin, ymin, zmin = pts_velo.min(0)
-    xmax, ymax, zmax = pts_velo.max(0)
-    return np.array([
-        [xmax, ymax, zmin], [xmin, ymax, zmin], [xmin, ymin, zmin], [xmax, ymin, zmin],
-        [xmax, ymax, zmax], [xmin, ymax, zmax], [xmin, ymin, zmax], [xmax, ymin, zmax],
-    ], dtype=np.float32)
+def get_3d_corners_from_box(box: Box) -> np.ndarray:
+    """Calculates the 8 3D corners of a Box object in the LiDAR frame."""
+    # Get the 2D corners of the rotated box footprint
+    bev_corners = _corners_2d(box) # Uses the helper we already have
+
+    # Get the min and max Z values from the box's center and height
+    z_min = box.z - (box.h / 2)
+    z_max = box.z + (box.h / 2)
+
+    # Create the 8 3D corners
+    bottom_corners = np.hstack([bev_corners, np.full((4, 1), z_min)])
+    top_corners = np.hstack([bev_corners, np.full((4, 1), z_max)])
+
+    return np.vstack([bottom_corners, top_corners])
 
 def _draw_3d_bbox(ax, pts2d, **kw):
     """ Draws the 12 lines of a 3D bbox in an image. """
@@ -69,37 +60,53 @@ def _draw_3d_bbox(ax, pts2d, **kw):
         if not (np.isnan(pts2d[i]).any() or np.isnan(pts2d[j]).any()):
             ax.plot([pts2d[i, 0], pts2d[j, 0]], [pts2d[i, 1], pts2d[j, 1]], **kw)
 
+
 # The Main Plotting Function
 
 def create_validation_plot(
     original_xyz: np.ndarray,
-    inserted_objects: list, # Now expects a list of object point clouds
+    inserted_objects_info: list,
     image_path: Path,
     calib: dict,
-    save_path: Path,
-    obj_class # This can now be a summary string, e.g., "Car, Pedestrian"
+    save_path: Path
 ):
     """
-    Generates a single validation image, correctly plotting multiple
-    inserted objects and their individual bounding boxes.
+    Generates a larger, clearer, and better-zoomed validation image.
     """
-    fig, (ax_bev, ax_cam) = plt.subplots(1, 2, figsize=(22, 7))
-    plot_title = f"Validation for Frame: {image_path.stem} | Pasted: {len(inserted_objects)} objects"
-    fig.suptitle(plot_title, fontsize=16)
+    class_names = [info['label'].split()[0] for info in inserted_objects_info]
+    title_str = f"Pasted: {', '.join(class_names) or '0 objects'}"
+
+    # --- CHANGE 1: Larger Figure and Better Layout ---
+    fig, (ax_bev, ax_cam) = plt.subplots(
+        1, 2, 
+        figsize=(24, 9), # Increased from (22, 7)
+        gridspec_kw={'width_ratios': [1, 1.7]} # Give camera overlay more horizontal space
+    )
+    fig.suptitle(f"Validation for Frame: {image_path.stem} | {title_str}", fontsize=16)
 
     # --- Plot 1: Bird's-Eye-View (BEV) ---
-    ax_bev.scatter(original_xyz[:, 0], original_xyz[:, 1], s=1.5, c="royalblue", label="Original Scene")
+    # CHANGE 3: Increased point size for original scene
+    ax_bev.scatter(original_xyz[:, 0], original_xyz[:, 1], s=2, c="royalblue", alpha=0.6, label="Original Scene")
     
-    # Loop through each inserted object to plot it
-    if inserted_objects:
-        all_inserted_pts = np.vstack(inserted_objects)
-        ax_bev.scatter(all_inserted_pts[:, 0], all_inserted_pts[:, 1], s=15, c="red", label="Inserted Objects", zorder=3)
-        # Zoom to fit all inserted objects
+    if inserted_objects_info:
+        all_inserted_pts = np.vstack([info['pts'][:,:3] for info in inserted_objects_info])
+        # Plot each inserted object with its own color and larger points
+        for info in inserted_objects_info:
+            points, box, cls_name = info['pts'], info['box'], info['label'].split()[0]
+            color = CLASS_COLOR_MAP.get(cls_name, 'magenta')
+            # CHANGE 3: Increased point size for inserted objects
+            ax_bev.scatter(points[:, 0], points[:, 1], s=20, c=color, label=cls_name, zorder=10)
+            corners = _corners_2d(box)
+            ax_bev.plot(np.append(corners[:, 0], corners[0, 0]), np.append(corners[:, 1], corners[0, 1]), c=color, lw=2.0)
+
+        # --- CHANGE 2: Tighter Zoom on BEV Plot ---
+        # Calculate a tight window around all inserted objects
         center = all_inserted_pts[:, :2].mean(0)
-        max_spread = np.max(all_inserted_pts[:, :2].max(0) - all_inserted_pts[:, :2].min(0))
-        zoom_margin = max(20, max_spread * 1.5)
-        ax_bev.set_xlim(center[0] - zoom_margin/2, center[0] + zoom_margin/2)
-        ax_bev.set_ylim(center[1] - zoom_margin/2, center[1] + zoom_margin/2)
+        # Create a fixed 40m x 40m window for a consistent, focused view
+        zoom_size = 40.0 
+        ax_bev.set_xlim(center[0] - zoom_size / 2, center[0] + zoom_size / 2)
+        ax_bev.set_ylim(center[1] - zoom_size / 2, center[1] + zoom_size / 2)
+        # --- END OF ZOOM LOGIC ---
 
     ax_bev.set_title("Bird's-Eye-View (Zoomed on Insertion)")
     ax_bev.set_xlabel("X [m] (LiDAR Frame)"); ax_bev.set_ylabel("Y [m] (LiDAR Frame)")
@@ -107,23 +114,26 @@ def create_validation_plot(
 
     # --- Plot 2: Camera Overlay ---
     img = np.array(Image.open(image_path).convert("RGB"))
-    ax_cam.imshow(img)
-    ax_cam.set_title("Camera Overlay"); ax_cam.set_axis_off()
+    ax_cam.imshow(img); ax_cam.set_title("Camera Overlay"); ax_cam.set_axis_off()
 
-    # Loop through each object to project points and draw its bounding box
-    for inserted_xyz in inserted_objects:
-        pix_ins = project_velo_to_image(inserted_xyz, calib)
+    for info in inserted_objects_info:
+        pts, box, cls_name = info['pts'], info['box'], info['label'].split()[0]
+        color = CLASS_COLOR_MAP.get(cls_name, 'magenta')
+        
+        # Project points (with larger size)
+        pix_ins = project_velo_to_image(pts[:, :3], calib)
         ok_i = ~np.isnan(pix_ins).any(1)
-        ax_cam.scatter(pix_ins[ok_i, 0], pix_ins[ok_i, 1], s=10, c="red", edgecolors='white', lw=0.5)
+        # CHANGE 3: Increased point size
+        ax_cam.scatter(pix_ins[ok_i, 0], pix_ins[ok_i, 1], s=12, c=color, edgecolors='black', lw=0.5, zorder=10)
 
-        if inserted_xyz.shape[0] > 0:
-            corners_velo = make_axis_aligned_bbox(inserted_xyz)
-            corners_img = project_velo_to_image(corners_velo, calib)
-            _draw_3d_bbox(ax_cam, corners_img, color="lime", lw=1.5)
+        # Project the TRUE 3D box corners
+        corners_3d_velo = get_3d_corners_from_box(box)
+        corners_img = project_velo_to_image(corners_3d_velo, calib)
+        _draw_3d_bbox(ax_cam, corners_img, color=color, lw=2.0)
 
-    # Save the combined figure
+    # --- CHANGE 1 (Continued): Higher resolution output ---
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(save_path, dpi=150)
+    plt.savefig(save_path, dpi=200, bbox_inches='tight', pad_inches=0.1) # Increased dpi
     plt.close(fig)
     print(f"Validation plot saved to: {save_path.name}")

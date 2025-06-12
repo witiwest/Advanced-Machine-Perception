@@ -348,7 +348,7 @@ class DataAugmenter:
 
     def __call__(self, data_sample: dict):
         if self.rng.random() > self.cfg.prob:
-            return data_sample
+            return data_sample, []
 
         pc = data_sample['pc'].copy()
         labels = data_sample['labels'].copy()
@@ -402,7 +402,7 @@ class DataAugmenter:
         # Final scene composition
         if successfully_placed_objects:
             final_pc = pc.copy()
-            final_boxes = [obj[2] for obj in successfully_placed_objects]
+            final_boxes = [obj['box'] for obj in successfully_placed_objects]
             final_pc = remove_points_occluded_by_boxes(final_pc, final_boxes)
 
             if final_pc.shape[1] == 4:
@@ -411,14 +411,14 @@ class DataAugmenter:
                 final_pc = np.hstack([final_pc, sem_base])
 
             # Stack all the new object points and update labels
-            for new_pts, new_label, _ in successfully_placed_objects:
-                final_pc = np.vstack([final_pc, new_pts])
-                labels.append(new_label)
+            for obj in successfully_placed_objects:
+                final_pc = np.vstack([final_pc, obj['pts']])
+                labels.append(obj['label'])
             
             data_sample['pc'] = final_pc
             data_sample['labels'] = labels
 
-        return data_sample
+        return data_sample, successfully_placed_objects
     
     def _perform_insertion(self, original_pc, obj_db, cls, scene_boxes, rng, global_plane_params, sampler_pool, scene_voxel_set):
         
@@ -464,7 +464,7 @@ class DataAugmenter:
                 continue
 
             global_ground_z= -(a * x + b * y + d)/ c
-            z = global_ground_z + (h/2) - z_min_donor
+            z = global_ground_z + (h/2)
             box = Box(x, y, z, l, w, h, yaw)
 
             # validation checks
@@ -482,7 +482,7 @@ class DataAugmenter:
             pts[:,1] -= centroid_xy[1]; 
             pts[:,2] -= z_min_donor
             pts[:,:3] = (Rz@pts[:,:3].T).T
-            pts[:,:3] += np.array([x,y,global_ground_z])
+            pts[:,:3] += np.array([x, y, global_ground_z])
             
             # Call the optimized occlusion check
             pts, _ = is_line_of_sight_clear(scene_voxel_set, pts, margin=0.05)
@@ -498,6 +498,6 @@ class DataAugmenter:
             sem_pts[:,sem_idx] = 1.0
             pts = np.hstack([pts, sem_pts])
             
-            return pts, label, box
+            return {'pts': pts, 'label': label, 'box': box}
 
         return None
