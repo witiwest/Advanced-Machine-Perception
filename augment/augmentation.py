@@ -156,9 +156,6 @@ def sample_pose_by_class(cls: str, rng, sampler_pool: np.ndarray):
         # Cars should have an orientation aligned with the road
         yaw = rng.normal(loc=0.0, scale=np.deg2rad(5))
         
-        # Small random offset to simulate not being perfectly centered on a point
-        x += rng.uniform(-0.5, 0.5)
-        y += rng.uniform(-0.5, 0.5)
 
     elif cls == "Pedestrian" or cls == "Cyclist":
         # Pedestrians and cyclists can be closer, but not right on top of the car
@@ -431,14 +428,24 @@ class DataAugmenter:
         
         for _ in range(self.cfg.max_trials):
             ent = rng.choice(donors); 
+            label=ent["label"]
             pts = ent["points"].copy(); 
+            original_ry_kitti = float(label.split()[14])
+            original_yaw_velo = -(original_ry_kitti + np.pi / 2) 
+            original_yaw_velo = normalize_angles(original_yaw_velo + np.pi) - np.pi
+            Rz_original_inv = np.array([
+                [np.cos(-original_yaw_velo), -np.sin(-original_yaw_velo), 0],
+                [np.sin(-original_yaw_velo), np.cos(-original_yaw_velo), 0],
+                [0, 0, 1]
+            ], np.float32)
+            pts[:,:3] = (Rz_original_inv @ pts[:,:3].T).T
             pts = apply_noise_to_object(pts, rng)
 
             if len(pts) < 10: 
                 continue
 
             original_point_count = len(pts); 
-            label=ent["label"]
+            
             h, w, l=map(float, label.split()[8:11]); 
             z_min_donor = pts[:, 2].min()
             x, y, yaw = sample_pose_by_class(cls, rng, sampler_pool)
