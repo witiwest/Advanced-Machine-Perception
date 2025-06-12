@@ -386,7 +386,7 @@ class DataAugmenter:
 
                 if new_object_data:
                     successfully_placed_objects.append(new_object_data)
-                    scene_boxes.append(new_object_data[2])
+                    scene_boxes.append(new_object_data['box'])
                 else:
                     break
         
