@@ -108,20 +108,35 @@ def build_voxel_hash(points, voxel_size):
 def get_voxel_key(point, voxel_size):
     return tuple(np.floor(point / voxel_size).astype(np.int32))
 
-def is_line_of_sight_clear(voxel_set, object_pts, margin=0.05, num_ray_samples=90):
-    visible, occluded = [], []
-    for point in object_pts:
+def is_line_of_sight_clear(pc: np.ndarray, obj_pts: np.ndarray, margin=0.25):
+    """
+    Fast occlusion test: removes points in 'obj_pts' that are occluded by 'pc'
+    when viewed from the origin (0, 0, 0).
+    """
+    occlusion_mask = np.ones(len(obj_pts), dtype=bool)
+
+    pc = pc[:, :3]
+    for i, point in enumerate(obj_pts):
         norm = np.linalg.norm(point)
         if norm < 1e-8:
-            visible.append(point); continue
-        ray_samples = point * np.linspace(0.1, 0.9, num_ray_samples)[:, None]
-        ray_voxels = {get_voxel_key(s, margin) for s in ray_samples}
-        if not ray_voxels.intersection(voxel_set):
-            visible.append(point)
-        else:
-            occluded.append(point)
-    return np.array(visible) if visible else np.empty((0, object_pts.shape[1])), \
-           np.array(occluded) if occluded else np.empty((0, object_pts.shape[1]))
+            continue
+        
+        direction = point / norm
+        projections = pc @ direction
+        mask = (projections > 0) & (projections < norm)
+        
+        if not np.any(mask):
+            continue
+
+        # Vector of closest points along the ray
+        closest = np.outer(projections[mask], direction)
+        distances = np.linalg.norm(pc[mask] - closest, axis=1)
+
+        if np.any(distances < margin):
+            occlusion_mask[i] = False
+
+    return obj_pts[occlusion_mask]
+
 
 def get_data_driven_sampler_pool(pc: np.ndarray):
     """
@@ -179,13 +194,13 @@ def sample_pose_by_class(cls: str, rng, sampler_pool: np.ndarray):
 
 def is_placement_realistic(box: Box, cls: str, scene_pc: np.ndarray):
     """ Context-aware placement check using local ground geometry. """
-    local_patch_radius = 1.5
+    local_patch_radius = 1
     distances = np.linalg.norm(scene_pc[:, :2] - np.array([box.x, box.y]), axis=1)
     local_points = scene_pc[distances < local_patch_radius]
-    if len(local_points) < 10: return False
+    if len(local_points) < 40: return False
 
     ground_points = local_points[local_points[:, 2] < (local_points[:, 2].min() + 0.25)]
-    if len(ground_points) < 10: return False
+    if len(ground_points) < 30: return False
     
     z_std_dev = np.std(ground_points[:, 2])
 
@@ -460,9 +475,6 @@ class DataAugmenter:
             pts[:,:3] = (Rz_original_inv @ pts[:,:3].T).T
             pts = apply_noise_to_object(pts, rng)
 
-            if len(pts) < 10: 
-                continue
-
             original_point_count = len(pts); 
             
             h, w, l=map(float, label.split()[8:11]); 
@@ -498,7 +510,7 @@ class DataAugmenter:
                 continue
             if any(boxes_overlap(box,b) for b in scene_boxes): 
                 continue
-            if len(get_points_in_box(original_pc,box))>5: 
+            if len(get_points_in_box(original_pc,box))>10: 
                 continue
             
             # Transform, then check partial occlusion
@@ -513,7 +525,7 @@ class DataAugmenter:
             pts[:,:3] += np.array([x, y, global_ground_z])
             
             # Call the optimized occlusion check
-            pts, _ = is_line_of_sight_clear(scene_voxel_set, pts, margin=0.05)
+            pts = is_line_of_sight_clear(original_pc, pts, margin=0.1)
 
             if len(pts) < original_point_count*0.3: 
                 continue
