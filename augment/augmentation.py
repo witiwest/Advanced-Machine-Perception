@@ -5,7 +5,6 @@ import random
 import pickle
 import os
 import glob
-from scipy.spatial import KDTree
 
 Box = namedtuple("Box", "x y z l w h yaw")
 
@@ -18,17 +17,19 @@ def fit_global_ground_plane_ransac(pc: np.ndarray, iters=100, eps=0.1):
     """
     # First, filter the point cloud to a "trusted" subset for finding the ground.
     # We use points that are relatively close to the vehicle and below the sensor height.
-    trusted_mask = (np.linalg.norm(pc[:, :2], axis=1) < 20.0) & (pc[:, 2] < -0.5)
-    ground_candidates = pc[trusted_mask, :3]
-
-    if len(ground_candidates) < 50:
-        print("Warning: Not enough ground points near vehicle to fit a global plane.")
-        return None
-
     # RANSAC Implementation 
     best_inliers_count = 0
     best_plane = None
     rng = np.random.default_rng()
+    
+    trusted_mask = (np.linalg.norm(pc[:, :2], axis=1) < 20.0) & (pc[:, 2] < -0.5)
+    all_cands = pc[trusted_mask, :3]
+    max_cands = min(len(all_cands), 1000)
+    ground_candidates = all_cands[rng.choice(len(all_cands), max_cands, replace=False)]
+
+    if len(ground_candidates) < 50:
+        print("Warning: Not enough ground points near vehicle to fit a global plane.")
+        return None
 
     for _ in range(iters):
         try:
@@ -108,7 +109,7 @@ def build_voxel_hash(points, voxel_size):
 def get_voxel_key(point, voxel_size):
     return tuple(np.floor(point / voxel_size).astype(np.int32))
 
-def is_line_of_sight_clear(pc: np.ndarray, object: np.ndarray, margin=0.05, num_ray_samples=200):
+def is_line_of_sight_clear(pc: np.ndarray, object: np.ndarray, margin=0.10, num_ray_samples=100):
     pc_xyz = pc[:, :3] if pc.shape[1] > 3 else pc
     voxel_set = build_voxel_hash(pc_xyz, margin)
 
@@ -302,6 +303,7 @@ class DataAugmenter:
         self.max_trials = self.cfg.max_trials
         self.classes_to_augment = list(self.obj_db.keys())
         self.rng = np.random.default_rng()
+
         print(f"Data Augmenter initialized. Augmenting with: {self.classes_to_augment}")
 
     def __call__(self, data_sample: dict):
@@ -353,6 +355,7 @@ class DataAugmenter:
                 if ok:
                     # print(f"SUCCESS: Placed a '{cls_to_insert}'. Updating scene state for next attempt.")
                     # Update the state for the next iteration
+                    
                     pc = pc_new
                     labels = labels_new
                     scene_boxes = scene_boxes_new
