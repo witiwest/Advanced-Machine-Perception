@@ -389,7 +389,7 @@ class DataAugmenter:
                 # _perform_insertion gets the pre-computed voxel set
                 new_object_data = self._perform_insertion(
                     pc, self.obj_db, cls_to_insert, scene_boxes, self.rng, 
-                    global_plane_params, sampler_pool, scene_voxel_set)
+                    global_plane_params, sampler_pool, scene_voxel_set, Tr_cam_to_velo)
 
                 if new_object_data:
                     successfully_placed_objects.append(new_object_data)
@@ -427,7 +427,7 @@ class DataAugmenter:
 
         return data_sample, successfully_placed_objects
     
-    def _perform_insertion(self, original_pc, obj_db, cls, scene_boxes, rng, global_plane_params, sampler_pool, scene_voxel_set, Tr_cam_to_velo=np.eye(4)):
+    def _perform_insertion(self, original_pc, obj_db, cls, scene_boxes, rng, global_plane_params, sampler_pool, scene_voxel_set, Tr_cam_to_velo):
         
         if global_plane_params is None: 
             return None
@@ -440,6 +440,15 @@ class DataAugmenter:
             ent = rng.choice(donors); 
             label=ent["label"]
             pts = ent["points"].copy(); 
+
+            cam_offset = np.array([float(label.split()[11]), float(label.split()[12]), float(label.split()[13]), 1.0])
+            lidar_offset = (Tr_cam_to_velo@ cam_offset)
+            x_offset_lidar = lidar_offset[0]
+            y_offset_lidar = lidar_offset[1]
+
+            pts[:, 0] -= x_offset_lidar
+            pts[:, 1] -= y_offset_lidar
+
             original_ry_kitti = float(label.split()[14])
             original_yaw_velo = -(original_ry_kitti + np.pi / 2) 
             original_yaw_velo = normalize_angles(original_yaw_velo + np.pi) - np.pi
@@ -494,20 +503,13 @@ class DataAugmenter:
             
             # Transform, then check partial occlusion
             Rz = np.array([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw), np.cos(yaw), 0], [0, 0, 1]], np.float32)
-            x_offset = float(label.split()[11])  # x offset in the label
-            y_offset = float(label.split()[12])  # y offset in the label
+
             # Adjust points based on the label offsets and global ground plane
             # Convert the (x, y) offsets from camera to lidar frame using inverse transform
 
-            cam_offset = np.array([float(label.split()[11]), float(label.split()[12]), float(label.split()[13]), 1.0])
-            lidar_offset = Tr_cam_to_velo@ cam_offset
-            x_offset_lidar = lidar_offset[0]
-            y_offset_lidar = lidar_offset[1]
-            pts[:, 0] -= x_offset_lidar
-            pts[:, 1] -= y_offset_lidar; 
-
             pts[:,2] -= z_min_donor
             pts[:,:3] = (Rz@pts[:,:3].T).T
+ 
             pts[:,:3] += np.array([x, y, global_ground_z])
             
             # Call the optimized occlusion check
