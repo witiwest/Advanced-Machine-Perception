@@ -23,9 +23,8 @@ def fit_global_ground_plane_ransac(pc: np.ndarray, iters=50, eps=0.1):
     rng = np.random.default_rng()
     
     trusted_mask = (np.linalg.norm(pc[:, :2], axis=1) < 20.0) & (pc[:, 2] < -0.5)
-    all_cands = pc[trusted_mask, :3]
-    max_cands = min(len(all_cands), 1000)
-    ground_candidates = all_cands[rng.choice(len(all_cands), max_cands, replace=False)]
+    ground_candidates = pc[trusted_mask, :3]
+
 
     if len(ground_candidates) < 50:
         print("Warning: Not enough ground points near vehicle to fit a global plane.")
@@ -127,12 +126,29 @@ def is_line_of_sight_clear(voxel_set, object_pts, margin=0.05, num_ray_samples=9
 def get_data_driven_sampler_pool(pc: np.ndarray):
     """
     Filters the scene's point cloud to find all points that are likely on a
-    traversable ground surface, creating a pool for data-driven sampling.
+    traversable ground surface and respects class-specific sampling rules
+    (e.g., for Car, Pedestrian, Cyclist).
+
+    Args:
+        pc (np.ndarray): Point cloud of shape (N, 3).
+        cls (str): Object class to filter for ("Car", "Pedestrian", or "Cyclist").
+
+    Returns:
+        np.ndarray: Filtered pool of (x, y) points for data-driven sampling.
     """
-    # Exclude points that are too close (ego-vehicle), too high (buildings),
-    # or potentially part of the sky.
-    ground_mask = (pc[:, 2] < -0.5) & (np.linalg.norm(pc[:, :2], axis=1) > 10)
-    return pc[ground_mask, :2]
+    # Basic ground filter: remove points too high or too close to the ego-vehicle
+    base_ground_mask = (pc[:, 2] < -0.5) & (np.linalg.norm(pc[:, :2], axis=1) > 10)
+
+    # Extract X and Y for additional geometric filtering
+    x = pc[:, 0]
+    y = pc[:, 1]
+    class_mask = (x >= 5) & (x <= 30) & (y >= -0.5 * x) & (y <= 0.5 * x)
+
+
+    # Final combined mask
+    valid_mask = base_ground_mask & class_mask
+
+    return pc[valid_mask, :2]  # Return only the (x, y) coordinates
 
 def sample_pose_by_class(cls: str, rng, sampler_pool: np.ndarray):
     """
@@ -149,18 +165,12 @@ def sample_pose_by_class(cls: str, rng, sampler_pool: np.ndarray):
 
     # Class-Specific heuristics and dead zones
     if cls == "Car":
-        # Enforce a "dead zone" immediately around the ego-vehicle for cars.
-        if x < 5 or x > 30 or y > 0.5 * x or y < -0.5 * x:
-            return None, None, None 
 
         # Cars should have an orientation aligned with the road
         yaw = rng.normal(loc=0.0, scale=np.deg2rad(5))
         
 
     elif cls == "Pedestrian" or cls == "Cyclist":
-        # Pedestrians and cyclists can be closer, but not right on top of the car
-        if x < 2 or x > 30 or y > 0.5 * x or y < -0.5 * x:
-            return None, None, None # Reject if too close
 
         # Pedestrians can face any way, cyclists are mostly forward
         yaw = rng.uniform(-np.pi, np.pi) if cls == "Pedestrian" else rng.normal(loc=0.0, scale=np.deg2rad(20))
@@ -392,7 +402,7 @@ class DataAugmenter:
             cls_to_insert = self.rng.choice(self.classes_to_augment)
             new_object_data = self._perform_insertion(
                 pc, self.obj_db, cls_to_insert, scene_boxes, self.rng, 
-                global_plane_params, sampler_pool, scene_voxel_set)
+                global_plane_params, sampler_pool, scene_voxel_set, Tr_cam_to_velo)
             if new_object_data:
                 successfully_placed_objects.append(new_object_data)
         
@@ -417,7 +427,7 @@ class DataAugmenter:
 
         return data_sample, successfully_placed_objects
     
-    def _perform_insertion(self, original_pc, obj_db, cls, scene_boxes, rng, global_plane_params, sampler_pool, scene_voxel_set):
+    def _perform_insertion(self, original_pc, obj_db, cls, scene_boxes, rng, global_plane_params, sampler_pool, scene_voxel_set, Tr_cam_to_velo=np.eye(4)):
         
         if global_plane_params is None: 
             return None
@@ -484,9 +494,18 @@ class DataAugmenter:
             
             # Transform, then check partial occlusion
             Rz = np.array([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw), np.cos(yaw), 0], [0, 0, 1]], np.float32)
-            centroid_xy = np.mean(pts[:,:2], axis=0)
-            pts[:, 0] -= centroid_xy[0]; 
-            pts[:,1] -= centroid_xy[1]; 
+            x_offset = float(label.split()[11])  # x offset in the label
+            y_offset = float(label.split()[12])  # y offset in the label
+            # Adjust points based on the label offsets and global ground plane
+            # Convert the (x, y) offsets from camera to lidar frame using inverse transform
+
+            cam_offset = np.array([float(label.split()[11]), float(label.split()[12]), float(label.split()[13]), 1.0])
+            lidar_offset = Tr_cam_to_velo@ cam_offset
+            x_offset_lidar = lidar_offset[0]
+            y_offset_lidar = lidar_offset[1]
+            pts[:, 0] -= x_offset_lidar
+            pts[:, 1] -= y_offset_lidar; 
+
             pts[:,2] -= z_min_donor
             pts[:,:3] = (Rz@pts[:,:3].T).T
             pts[:,:3] += np.array([x, y, global_ground_z])
