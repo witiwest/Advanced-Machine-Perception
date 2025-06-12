@@ -201,47 +201,105 @@ def get_points_in_box(pc: np.ndarray, box: Box):
                   (np.abs(rotated_points[:, 2]) < box.h / 2)
     return np.where(in_box_mask)[0]
 
-def remove_points_occluded_by_boxes(pc: np.ndarray, boxes: list, sensor_origin=np.array([0.0, 0.0, 0.0])):
+def normalize_angles(angles: np.ndarray) -> np.ndarray:
     """
-    Removes points from the scene 'pc' that are occluded by a LIST of 3D boxes.
-    It pre-computes scene information once, making it faster.
+    Normalize angles to [0, 2*pi).
+    """
+    return np.mod(angles, 2 * np.pi)
+
+
+def cross2(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """
+    2D cross product (result is scalar for each pair of vectors).
+    a, b: (..., 2)
+    returns: (...) cross product a.x*b.y - a.y*b.x
+    """
+    return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
+
+
+def remove_points_occluded_by_boxes(
+    pc: np.ndarray,
+    boxes: list,
+    sensor_origin: np.ndarray = np.array([0.0, 0.0, 0.0]),
+) -> np.ndarray:
+    """
+    Efficiently removes points from `pc` that are occluded by 3D boxes.
+
+    Args:
+        pc: (N,3) array of point coordinates.
+        boxes: iterable of box objects with methods:
+            - corners_2d() -> (4,2) footprint corners in XY plane
+            - z_bounds() -> (z_min, z_max)
+        sensor_origin: (3,) sensor position.
+
+    Returns:
+        Filtered (M,3) array of points not occluded by any box.
     """
     if not boxes:
         return pc
 
-    # 
-    # Calculate angles and ranges for all scene points once.
-    points_xy = pc[:, :2] - sensor_origin[:2]
-    point_ranges = np.linalg.norm(points_xy, axis=1)
-    point_angles = np.arctan2(points_xy[:, 1], points_xy[:, 0])
+    pts = pc.copy()
+    rel_xy = pts[:, :2] - sensor_origin[:2]
+    ranges = np.linalg.norm(rel_xy, axis=1)
+    angles = normalize_angles(np.arctan2(rel_xy[:,1], rel_xy[:,0]))
 
-    # This will be our final mask of all points to be removed
-    master_occluded_mask = np.zeros(len(pc), dtype=bool)
+    occluded = np.zeros(len(pts), dtype=bool)
 
     for box in boxes:
-        # Get the angular sector and range for this specific box
-        corners = _corners_2d(box)
-        vectors_to_corners = corners - sensor_origin[:2]
-        corner_angles = np.arctan2(vectors_to_corners[:, 1], vectors_to_corners[:, 0])
-        
-        min_angle, max_angle = np.min(corner_angles), np.max(corner_angles)
-        if max_angle - min_angle > np.pi:
-            min_angle, max_angle = max_angle, min_angle
 
-        box_range = np.min(np.linalg.norm(vectors_to_corners, axis=1))
+        # Footprint corners and angular sector
+        corners = _corners_2d(box)  # (4,2)
+        c_rel = corners - sensor_origin[:2]
+        c_angles = normalize_angles(np.arctan2(c_rel[:,1], c_rel[:,0]))
+        a_min, a_max = c_angles.min(), c_angles.max()
+        # handle wrap-around
+        if a_max - a_min > np.pi:
+            # shift small angles up
+            c_angles = np.where(c_angles < (a_min + a_max)/2, c_angles + 2*np.pi, c_angles)
+            a_min, a_max = c_angles.min(), c_angles.max()
 
-        # Identify points occluded by THIS box
-        if min_angle < max_angle:
-            in_sector = (point_angles >= min_angle) & (point_angles <= max_angle)
-        else:
-            in_sector = (point_angles >= min_angle) | (point_angles <= max_angle)
-        
-        occluded_by_this_box = in_sector & (point_ranges > box_range)
-        
-        # Add these points to our master occlusion mask
-        master_occluded_mask |= occluded_by_this_box
+        # select candidate rays
+        angs = angles.copy()
+        angs = np.where(angs < a_min, angs + 2*np.pi, angs)
+        mask_sector = (angs >= a_min) & (angs <= a_max)  & ~occluded
+        idxs = np.nonzero(mask_sector)[0]
+        if idxs.size == 0:
+            continue
 
-    return pc[~master_occluded_mask]
+        # Ray directions for candidates
+        dirs = np.stack((np.cos(angs[idxs]), np.sin(angs[idxs])), axis=1)  # (K,2)
+        origins = np.repeat(sensor_origin[:2][None, :], len(idxs), axis=0)  # (K,2)
+
+        # Precompute edges
+        pts2d = corners
+        edge_starts = pts2d
+        edge_ends = np.vstack((pts2d[1:], pts2d[0]))  # (4,2)
+        e_vecs = edge_ends - edge_starts  # (4,2)
+
+        # For each edge, compute t and u for all rays
+        t_all = np.full((len(idxs), len(e_vecs)), np.inf)
+        for j, (p1, v2) in enumerate(zip(edge_starts, e_vecs)):
+            v1 = origins - p1  # (K,2)
+            denom = cross2(dirs, v2)  # (K,)
+            # avoid division by zero
+            valid = np.abs(denom) > 1e-8
+            t = np.full(len(idxs), np.inf)
+            u = np.zeros(len(idxs))
+            # compute t and u only where valid
+            t_valid = cross2(v2, v1)[valid] / denom[valid]
+            u_valid = cross2(dirs[valid], v1[valid]) / denom[valid]
+            # accept intersections with t>0 and u in [0,1]
+            mask_valid = (t_valid > 0) & (u_valid >= 0) & (u_valid <= 1)
+            t[valid] = np.where(mask_valid, t_valid, np.inf)
+            t_all[:, j] = t
+
+        # nearest intersection per ray
+        t_min = t_all.min(axis=1)
+        # mark occluded if point distance > intersection
+        occluded[idxs] = ranges[idxs] > t_min
+
+    return pts[~occluded]
+
 
 def _read_12(line):
     """Convert 'tag: 12 floats' into (3,4) array."""
