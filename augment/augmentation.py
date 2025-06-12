@@ -390,12 +390,20 @@ class DataAugmenter:
                 else:
                     break
         
+        else:
+            # Single object insertion logic
+            cls_to_insert = self.rng.choice(self.classes_to_augment)
+            new_object_data = self._perform_insertion(
+                pc, self.obj_db, cls_to_insert, scene_boxes, self.rng, 
+                global_plane_params, sampler_pool, scene_voxel_set)
+            if new_object_data:
+                successfully_placed_objects.append(new_object_data)
+        
         # Final scene composition
         if successfully_placed_objects:
-            # Get the list of boxes that were successfully placed
+            final_pc = pc.copy()
             final_boxes = [obj[2] for obj in successfully_placed_objects]
-            # Perform background occlusion for ALL new objects in one pass
-            final_pc = remove_points_occluded_by_boxes(pc, final_boxes)
+            final_pc = remove_points_occluded_by_boxes(final_pc, final_boxes)
 
             if final_pc.shape[1] == 4:
                 sem_base = np.zeros((final_pc.shape[0], 5), dtype=np.float32); 
