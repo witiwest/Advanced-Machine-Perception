@@ -19,22 +19,27 @@ point_painting:
 voxel_encoder:
   in_channels: 9
   feat_channels: [64]
+  # feat_channels: [128]
   with_distance: FALSE
   voxel_size: ${model.voxel_size}
   point_cloud_range: ${model.point_cloud_range}
   
 middle_encoder:
   in_channels: 64
+  # in_channels: 128
   output_shape: [320, 320]
 
 backbone: 
   in_channels: 64
+  # in_channels: 128
   layer_nums: [3, 5, 5]
   layer_strides: [2, 2, 2]
   out_channels: [64, 128, 256]
+  # out_channels: [128, 128, 256]
 
 neck:
   in_channels: [64, 128, 256]
+  # in_channels: [128, 128, 256]
   upsample_strides: [1, 2, 4]
   out_channels: [128, 128, 128]
 

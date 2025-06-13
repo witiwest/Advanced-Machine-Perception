@@ -89,18 +89,28 @@ class PointPainting:
 
         # Create mask of already assigned points and skip them
         augmented_points_mask = painted_point_cloud[painted_points_indices, 4] != 1.0
-        painted_points_indices = painted_points_indices[augmented_points_mask]
+        unaugmented_painted_points_indices = painted_points_indices[
+            augmented_points_mask
+        ]
         uvs = uvs[augmented_points_mask]
 
         # Assign semantic segmentation output to semantic channels, skipping the
         # ones that are already assigned (augmented data)
 
         # Remove "unknown" class from all points inside image
-        painted_point_cloud[painted_points_indices, 4] = 0.0
+        painted_point_cloud[unaugmented_painted_points_indices, 4] = 0.0
 
         # Paint points inside image according to their predicted classes
         point_preds = predictions[0, :, uvs[:, 1], uvs[:, 0]].T  # [M, num_classes]
-        painted_point_cloud[painted_points_indices, 5:] = point_preds
+        painted_point_cloud[unaugmented_painted_points_indices, 5:] = point_preds
+
+        # Discard points in point cloud that do not fall into the image
+        if self.crop_point_cloud:
+            painted_point_cloud = painted_point_cloud[painted_points_indices]
+            # Remove "unknown" channel, since it only applies to points outside the image
+            painted_point_cloud = torch.cat(
+                [painted_point_cloud[:, :4], painted_point_cloud[:, 5:]], dim=1
+            )
 
         # Return painted point cloud
         return painted_point_cloud
