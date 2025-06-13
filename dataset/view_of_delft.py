@@ -106,6 +106,7 @@ class ViewOfDelft(Dataset):
             lidar_data = vod_frame_data.lidar_data
             raw_labels = vod_frame_data.raw_labels
 
+        # Original model supports 4 channels, but lidar contains 9 channels (for pointpainting)
         lidar_data = lidar_data[:, :4]
 
         gt_labels_3d_list = []

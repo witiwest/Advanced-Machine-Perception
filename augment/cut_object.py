@@ -249,7 +249,7 @@ calib_data_dir = os.path.join(_BASE, 'calib')
 
 # SELECT 100 RANDOM POINT CLOUDS TO EXTRACT OBJECTS FROM
 all_txt = sorted(glob.glob(os.path.join(label_data_dir, '*.txt')))
-random_txt = random.sample(all_txt, 1500) 
+random_txt = random.sample(all_txt, 2000) 
 
 random_bin   = []
 random_calib = []
@@ -286,16 +286,24 @@ for txt_path, calib_path in zip(random_txt, random_calib):
 
 # OUTER LOOP OVER TRAINNING FRAMES AND INNER LOOP OVER ANNOTATIONS
 INTEREST = {"Car", "Pedestrian", "Cyclist"}
+MIN_POINTS = {"Car": 60, "Cyclist": 50, "Pedestrian": 40}
+
 object_dict = {}
 for i, (pc, raw_anns, velo_ann_list) in enumerate(zip(training_data, [open(p).readlines() for p in random_txt], all_converted_annotations)):
     for j, (raw_line, velo_ann) in enumerate(zip(raw_anns, velo_ann_list)):
-        pts_in_box = cut_bounding_box(pc, velo_ann, annotation_move=[0, 0, 0])
-        parsed_class = raw_line.strip().split()[0]
+        parts = raw_line.strip().split()
+        parsed_class = parts[0]
+        occl_flag = int(parts[2])
+
         if parsed_class not in INTEREST:
             continue
-        if len(pts_in_box) <= 20:
-            continue  # Skip empty boxes
 
+        if parsed_class in {"Car", "Cyclist"} and occl_flag == 2:
+            continue                                      # skip heavily occluded objects
+
+        pts_in_box = cut_bounding_box(pc, velo_ann, annotation_move=[0, 0, 0])
+        if len(pts_in_box) < MIN_POINTS.get(parsed_class, 20):
+            continue                                      # skip very sparse crops
         
         entry = {
             'points': pts_in_box,
@@ -306,10 +314,23 @@ for i, (pc, raw_anns, velo_ann_list) in enumerate(zip(training_data, [open(p).re
             object_dict[parsed_class] = []
 
         object_dict[parsed_class].append(entry)
-# PRINT NUMBER OF OBJECTS EXTRACTED
-print(f"Extracted {len(object_dict)} objects from {len(training_data)} frames.")
 
+rng = random.Random(42)        
+
+# target = smallest class size
+target_n = min(len(v) for v in object_dict.values())
+
+balanced_dict = {}
+for cls, lst in object_dict.items():
+    if len(lst) > target_n:
+        balanced_dict[cls] = rng.sample(lst, target_n)   # keep random subset
+    else:
+        balanced_dict[cls] = lst
+# PRINT NUMBER OF OBJECTS EXTRACTED
+# print(f"Extracted {len(balanced_dict)} objects from {len(training_data)} frames.")
+for k,v in balanced_dict.items():
+    print(k, len(v))
 # SAVE OBJECT DICTIONARIES TO PICKLE FILE ON DISK
-print(object_dict["Cyclist"])
+# print(object_dict["Cyclist"])
 with open('object_dict.pkl', 'wb') as f:
-    pickle.dump(object_dict, f)
+    pickle.dump(balanced_dict, f)
