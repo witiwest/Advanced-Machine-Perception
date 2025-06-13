@@ -121,9 +121,9 @@ def get_data_driven_sampler_pool(pc: np.ndarray):
         region = (x>=5)&(x<=30)&(y>=-0.5*x)&(y<=0.5*x)
     elif cls=="Pedestrian":
         # allow x∈[0,20], y∈[-10,10]  (sidewalk / crosswalk region)
-        region = (x>=0)&(x<=20)&(y>=-10)&(y<=10)
+        region = (x>=1)&(x<=20)&(y>=-0.5*x)&(y<=0.5*x)
     else:  # Cyclist
-        region = (x>=2)&(x<=30)&(np.abs(y)<=0.5*x)
+        region = (x>=23)&(x<=30)&(np.abs(y)<=0.5*x)
     return pc[mask,:2][region]
 
 def sample_pose_by_class(cls: str, rng, sampler_pool: np.ndarray):
@@ -337,7 +337,7 @@ class DataAugmenter:
             p = ln.split(' ')
             if p[0] not in self.classes_to_augment: 
                 continue
-            sampler_pool = get_data_driven_sampler_pool(pc, cls=p[0])
+            
             h, w, l = map(float, p[8:11]); 
             x, y , z = map(float, p[11:14]); 
             ry = float(p[14])
@@ -351,7 +351,7 @@ class DataAugmenter:
                 if self.rng.random() > self.cfg.multi_object.attempt_probs[i]: 
                     break
                 cls_to_insert = self.rng.choice(self.classes_to_augment)
-                
+                sampler_pool = get_data_driven_sampler_pool(pc, cls=cls_to_insert)
                 # _perform_insertion gets the pre-computed voxel set
                 new_object_data = self._perform_insertion(
                     pc, self.obj_db, cls_to_insert, scene_boxes, self.rng, 
@@ -417,13 +417,13 @@ class DataAugmenter:
 
             original_ry_kitti = float(label.split()[14])
             original_yaw_velo = -(original_ry_kitti + np.pi / 2) 
-            original_yaw_velo = normalize_angles(original_yaw_velo + np.pi) - np.pi
-            Rz_original_inv = np.array([
-                [np.cos(-original_yaw_velo), -np.sin(-original_yaw_velo), 0],
-                [np.sin(-original_yaw_velo), np.cos(-original_yaw_velo), 0],
-                [0, 0, 1]
-            ], np.float32)
-            pts[:,:3] = (Rz_original_inv @ pts[:,:3].T).T
+            # original_yaw_velo = normalize_angles(original_yaw_velo + np.pi) - np.pi
+            # Rz_original_inv = np.array([
+            #     [np.cos(-original_yaw_velo), -np.sin(-original_yaw_velo), 0],
+            #     [np.sin(-original_yaw_velo), np.cos(-original_yaw_velo), 0],
+            #     [0, 0, 1]
+            # ], np.float32)
+            # pts[:,:3] = (Rz_original_inv @ pts[:,:3].T).T
             pts = apply_noise_to_object(pts, rng)
 
             original_point_count = len(pts); 
@@ -454,7 +454,7 @@ class DataAugmenter:
 
             global_ground_z= -(a * x + b * y + d)/ c
             z = global_ground_z + (h/2)
-            box = Box(x, y, z, l, w, h, yaw)
+            box = Box(x, y, z, l, w, h, yaw+original_yaw_velo)
 
             # validation checks
             if not is_placement_realistic(box,cls,original_pc): 
