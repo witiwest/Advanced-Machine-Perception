@@ -24,7 +24,7 @@ from common_src.augment.augmentation import DataAugmenter
 from common_src.augment.augmentation import DataAugmenter
 
 
-@hydra.main(version_base=None, config_path="../config", config_name="train_pointpainting")
+@hydra.main(version_base=None, config_path="../config", config_name="train_combined")
 def train(cfg: DictConfig) -> None:
     L.seed_everything(cfg.seed, workers=True)
 
