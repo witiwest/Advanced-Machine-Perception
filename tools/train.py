@@ -19,28 +19,43 @@ from torch.utils.data import DataLoader
 from common_src.model.detector import CenterPoint
 from common_src.dataset import ViewOfDelft, collate_vod_batch
 
+from common_src.augment.augmentation import DataAugmenter
+
+from common_src.augment.augmentation import DataAugmenter
+
 
 @hydra.main(version_base=None, config_path="../config", config_name="train")
 def train(cfg: DictConfig) -> None:
     L.seed_everything(cfg.seed, workers=True)
 
-    train_dataset = ViewOfDelft(data_root=cfg.data_root, split="train")
-    val_dataset = ViewOfDelft(data_root=cfg.data_root, split="val")
+    augmentation_cfg = None
+    if cfg.get('augmentation') and cfg.augmentation.enabled:
+        augmentation_cfg = cfg.augmentation 
 
-    train_dataloader = DataLoader(
-        train_dataset,
-        batch_size=cfg.batch_size,
-        num_workers=cfg.num_workers,
-        shuffle=True,
-        collate_fn=collate_vod_batch,
-    )
-    val_dataloader = DataLoader(
-        val_dataset,
-        batch_size=1,
-        num_workers=cfg.num_workers,
-        shuffle=False,
-        collate_fn=collate_vod_batch,
-    )
+        # Log the status of each individual augmentation type
+        if cfg.augmentation.copy_paste.enabled:
+            print("Copy-paste (Enabled)")
+        else:
+            print("Copy-paste (Disabled)")
+
+        if cfg.augmentation.global_transforms.enabled:
+            print("Global rotation & scaling (Enabled)")
+        else:
+            print("Global rotation & scaling (Disabled)")
+    
+    train_dataset = ViewOfDelft(data_root=cfg.data_root, split='train', augmentation_cfg=augmentation_cfg)
+    val_dataset = ViewOfDelft(data_root=cfg.data_root, split='val')
+    
+    train_dataloader = DataLoader(train_dataset, 
+                                  batch_size=cfg.batch_size, 
+                                  num_workers=cfg.num_workers, 
+                                  shuffle=True,
+                                  collate_fn=collate_vod_batch)
+    val_dataloader = DataLoader(val_dataset, 
+                                batch_size=1, 
+                                num_workers=cfg.num_workers, 
+                                shuffle=False,
+                                collate_fn=collate_vod_batch)
     model = CenterPoint(cfg.model)
     callbacks = [
         ModelCheckpoint(
