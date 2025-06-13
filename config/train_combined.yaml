@@ -1,0 +1,53 @@
+defaults: 
+  - model: centerpoint_pointpainting
+  - _self_
+
+seed: 47020
+
+exp_id: ${model.name}_ep_${epochs}
+
+data_root: data/view_of_delft
+output_dir: outputs/${exp_id}
+
+augmentation:
+  enabled: true
+
+  add_semantic_channels: false 
+  # Configuration for the "Copy-paste" (object insertion)
+  copy_paste:
+    enabled: true
+    obj_db_path: ${hydra:runtime.cwd}/common_src/object_dict.pkl
+    prob: 0.8  
+    max_trials: 30
+
+    multi_object:
+      enabled: false
+      # The maximum number of objects to try and add
+      max_objects: 1
+      # The probability of attempting to add the Nth object.
+      # 100% chance to try for the 1st, 70% for the 2nd, 40% for the 3rd.
+      attempt_probs: [0.8]
+
+  # Configuration for the final "Global transformations"
+  global_transforms:
+    enabled: true
+    rotation_range: [-0.785, 0.785] # Radians (-45 to +45 degrees)
+    scaling_range: [0.95, 1.05]
+
+checkpoint_path:
+
+class_namses: ['Car', 'Pedestrian', 'Cyclist']
+# trainer:
+num_workers: 2
+gpus: [0] # will change in code: torch.cuda.device_count()
+sync_bn: true
+batch_size: 2
+epochs: 50
+
+# log settings
+log_every: 50
+val_every: 3
+save_top_model: 5
+
+
+
