@@ -21,7 +21,7 @@ augmentation:
     max_trials: 30
 
     multi_object:
-      enabled: false
+      enabled: true
       # The maximum number of objects to try and add
       max_objects: 1
       # The probability of attempting to add the Nth object.
