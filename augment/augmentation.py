@@ -138,7 +138,7 @@ def is_line_of_sight_clear(pc: np.ndarray, obj_pts: np.ndarray, margin=0.25):
     return obj_pts[occlusion_mask]
 
 
-def get_data_driven_sampler_pool(pc: np.ndarray):
+def get_data_driven_sampler_pool(pc: np.ndarray, cls: str):
     """
     Filters the scene's point cloud to find all points that are likely on a
     traversable ground surface and respects class-specific sampling rules
@@ -152,18 +152,16 @@ def get_data_driven_sampler_pool(pc: np.ndarray):
         np.ndarray: Filtered pool of (x, y) points for data-driven sampling.
     """
     # Basic ground filter: remove points too high or too close to the ego-vehicle
-    base_ground_mask = (pc[:, 2] < -0.5) & (np.linalg.norm(pc[:, :2], axis=1) > 10)
-
-    # Extract X and Y for additional geometric filtering
-    x = pc[:, 0]
-    y = pc[:, 1]
-    class_mask = (x >= 5) & (x <= 30) & (y >= -0.5 * x) & (y <= 0.5 * x)
-
-
-    # Final combined mask
-    valid_mask = base_ground_mask & class_mask
-
-    return pc[valid_mask, :2]  # Return only the (x, y) coordinates
+    mask = (pc[:,2] < -0.5) & (np.linalg.norm(pc[:,:2],axis=1)>1.0)
+    x,y = pc[mask,:2].T
+    if cls=="Car":
+        region = (x>=5)&(x<=30)&(y>=-0.5*x)&(y<=0.5*x)
+    elif cls=="Pedestrian":
+        # allow x∈[0,20], y∈[-10,10]  (sidewalk / crosswalk region)
+        region = (x>=0)&(x<=20)&(y>=-10)&(y<=10)
+    else:  # Cyclist
+        region = (x>=2)&(x<=30)&(np.abs(y)<=0.5*x)
+    return pc[mask,:2][region]
 
 def sample_pose_by_class(cls: str, rng, sampler_pool: np.ndarray):
     """
@@ -378,7 +376,6 @@ class DataAugmenter:
         
         # Pre computation for efficiency
         global_plane_params = fit_global_ground_plane_ransac(pc)
-        sampler_pool = get_data_driven_sampler_pool(pc)
         scene_voxel_set = build_voxel_hash(pc[:, :3], voxel_size=0.1)
         
         Tr_cam_to_velo = np.linalg.inv(np.vstack([calib["Tr_velo_to_cam"], [0, 0, 0, 1]]))
@@ -387,6 +384,7 @@ class DataAugmenter:
             p = ln.split(' ')
             if p[0] not in self.classes_to_augment: 
                 continue
+            sampler_pool = get_data_driven_sampler_pool(pc, cls=p[0])
             h, w, l = map(float, p[8:11]); 
             x, y , z = map(float, p[11:14]); 
             ry = float(p[14])
@@ -487,11 +485,11 @@ class DataAugmenter:
             # Dynamic range check
             point_count = len(pts)
             if point_count > 150: 
-                preferred_range=(2,15)
+                preferred_range=(0,15)
             elif point_count > 80: 
-                preferred_range=(15,25)
+                preferred_range=(10,20)
             else: 
-                preferred_range=(25,35)
+                preferred_range=(20,35)
 
             if not(preferred_range[0]<np.linalg.norm([x,y])<preferred_range[1]): 
                 continue
