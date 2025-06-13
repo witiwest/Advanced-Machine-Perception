@@ -260,7 +260,7 @@ for txt_path in random_txt:
 
 # LOAD SELECTED POINT CLOUDS FROM BINARY FILES
 def load_one_bin(path):
-    pts = np.fromfile(path, dtype=np.float32).reshape(-1, 4)[:, :3]
+    pts = np.fromfile(path, dtype=np.float32).reshape(-1, 4)
     return pts
 
 training_data = [load_one_bin(p) for p in random_bin]
