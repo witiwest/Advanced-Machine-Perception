@@ -390,6 +390,11 @@ class CenterPoint(L.LightningModule):
                 scores=np.zeros([0]),
                 label_preds=np.zeros([0, 4]),
                 sample_idx=sample_idx)
+            
+    def on_train_epoch_start(self):
+        if hasattr(self.backbone, "set_epoch"):
+            self.backbone.set_epoch(self.current_epoch)
+
         
         
         
