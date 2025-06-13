@@ -108,48 +108,11 @@ def build_voxel_hash(points, voxel_size):
 def get_voxel_key(point, voxel_size):
     return tuple(np.floor(point / voxel_size).astype(np.int32))
 
-def is_line_of_sight_clear(pc: np.ndarray, obj_pts: np.ndarray, margin=0.25):
-    """
-    Fast occlusion test: removes points in 'obj_pts' that are occluded by 'pc'
-    when viewed from the origin (0, 0, 0).
-    """
-    occlusion_mask = np.ones(len(obj_pts), dtype=bool)
-
-    pc = pc[:, :3]
-    for i, point in enumerate(obj_pts):
-        norm = np.linalg.norm(point)
-        if norm < 1e-8:
-            continue
-        
-        direction = point / norm
-        projections = pc @ direction
-        mask = (projections > 0) & (projections < norm)
-        
-        if not np.any(mask):
-            continue
-
-        # Vector of closest points along the ray
-        closest = np.outer(projections[mask], direction)
-        distances = np.linalg.norm(pc[mask] - closest, axis=1)
-
-        if np.any(distances < margin):
-            occlusion_mask[i] = False
-
-    return obj_pts[occlusion_mask]
-
-
-def get_data_driven_sampler_pool(pc: np.ndarray, cls: str):
+def get_data_driven_sampler_pool(pc: np.ndarray):
     """
     Filters the scene's point cloud to find all points that are likely on a
     traversable ground surface and respects class-specific sampling rules
     (e.g., for Car, Pedestrian, Cyclist).
-
-    Args:
-        pc (np.ndarray): Point cloud of shape (N, 3).
-        cls (str): Object class to filter for ("Car", "Pedestrian", or "Cyclist").
-
-    Returns:
-        np.ndarray: Filtered pool of (x, y) points for data-driven sampling.
     """
     # Basic ground filter: remove points too high or too close to the ego-vehicle
     mask = (pc[:,2] < -0.5) & (np.linalg.norm(pc[:,:2],axis=1)>1.0)
@@ -244,16 +207,6 @@ def remove_points_occluded_by_boxes(
 ) -> np.ndarray:
     """
     Efficiently removes points from `pc` that are occluded by 3D boxes.
-
-    Args:
-        pc: (N,3) array of point coordinates.
-        boxes: iterable of box objects with methods:
-            - corners_2d() -> (4,2) footprint corners in XY plane
-            - z_bounds() -> (z_min, z_max)
-        sensor_origin: (3,) sensor position.
-
-    Returns:
-        Filtered (M,3) array of points not occluded by any box.
     """
     if not boxes:
         return pc
@@ -521,12 +474,6 @@ class DataAugmenter:
             pts[:,:3] = (Rz@pts[:,:3].T).T
  
             pts[:,:3] += np.array([x, y, global_ground_z])
-            
-            # Call the optimized occlusion check
-            pts = is_line_of_sight_clear(original_pc, pts, margin=0.1)
-
-            if len(pts) < original_point_count*0.3: 
-                continue
             
             # Add semantic channels and return the finished object
             if pts.shape[1] == 3: 

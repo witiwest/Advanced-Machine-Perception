@@ -18,15 +18,15 @@ augmentation:
     enabled: true
     obj_db_path: ${hydra:runtime.cwd}/common_src/object_dict.pkl
     prob: 0.8  
-    max_trials: 20
+    max_trials: 30
 
     multi_object:
-      enabled: true
+      enabled: false
       # The maximum number of objects to try and add
-      max_objects: 2
+      max_objects: 1
       # The probability of attempting to add the Nth object.
       # 100% chance to try for the 1st, 70% for the 2nd, 40% for the 3rd.
-      attempt_probs: [1.0, 0.8]
+      attempt_probs: [0.8]
 
   # Configuration for the final "Global transformations"
   global_transforms:

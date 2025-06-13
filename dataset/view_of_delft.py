@@ -99,7 +99,7 @@ class ViewOfDelft(Dataset):
                 'labels': vod_frame_data.raw_labels.copy(),
                 'calib': calib_dict
             }
-            augmented_sample = self.augmenter(data_sample)
+            augmented_sample, _ = self.augmenter(data_sample)
             lidar_data = augmented_sample['pc']
             raw_labels = augmented_sample['labels']
         else:
