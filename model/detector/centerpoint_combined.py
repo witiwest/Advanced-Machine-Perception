@@ -25,7 +25,7 @@ from common_src.model.heads import CenterHead
 from common_src.model.point_painting import PointPainting
 
 
-class CenterPointPainting(L.LightningModule):
+class CenterPointCombined(L.LightningModule):
     def __init__(self, config):
         super().__init__()
         self.save_hyperparameters()
@@ -540,3 +540,4 @@ class CenterPointPainting(L.LightningModule):
     def on_train_epoch_start(self):
         if hasattr(self.backbone, "set_epoch"):
             self.backbone.set_epoch(self.current_epoch)
+

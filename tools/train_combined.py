@@ -16,7 +16,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 
 import torch
 from torch.utils.data import DataLoader
-from common_src.model.detector import CenterPoint
+from common_src.model.detector import CenterPoint, CenterPointCombined
 from common_src.dataset import ViewOfDelft, collate_vod_batch
 
 from common_src.augment.augmentation import DataAugmenter
@@ -29,8 +29,8 @@ def train(cfg: DictConfig) -> None:
     L.seed_everything(cfg.seed, workers=True)
 
     augmentation_cfg = None
-    if cfg.get('augmentation') and cfg.augmentation.enabled:
-        augmentation_cfg = cfg.augmentation 
+    if cfg.get("augmentation") and cfg.augmentation.enabled:
+        augmentation_cfg = cfg.augmentation
 
         # Log the status of each individual augmentation type
         if cfg.augmentation.copy_paste.enabled:
@@ -42,21 +42,27 @@ def train(cfg: DictConfig) -> None:
             print("Global rotation & scaling (Enabled)")
         else:
             print("Global rotation & scaling (Disabled)")
-    
-    train_dataset = ViewOfDelft(data_root=cfg.data_root, split='train', augmentation_cfg=augmentation_cfg)
-    val_dataset = ViewOfDelft(data_root=cfg.data_root, split='val')
-    
-    train_dataloader = DataLoader(train_dataset, 
-                                  batch_size=cfg.batch_size, 
-                                  num_workers=cfg.num_workers, 
-                                  shuffle=True,
-                                  collate_fn=collate_vod_batch)
-    val_dataloader = DataLoader(val_dataset, 
-                                batch_size=1, 
-                                num_workers=cfg.num_workers, 
-                                shuffle=False,
-                                collate_fn=collate_vod_batch)
-    model = CenterPoint(cfg.model)
+
+    train_dataset = ViewOfDelft(
+        data_root=cfg.data_root, split="train", augmentation_cfg=augmentation_cfg
+    )
+    val_dataset = ViewOfDelft(data_root=cfg.data_root, split="val")
+
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=cfg.batch_size,
+        num_workers=cfg.num_workers,
+        shuffle=True,
+        collate_fn=collate_vod_batch,
+    )
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=1,
+        num_workers=cfg.num_workers,
+        shuffle=False,
+        collate_fn=collate_vod_batch,
+    )
+    model = CenterPointCombined(cfg.model)
     callbacks = [
         ModelCheckpoint(
             dirpath=osp.join(cfg.output_dir, "checkpoints"),
@@ -102,4 +108,3 @@ def train(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     train()
-
