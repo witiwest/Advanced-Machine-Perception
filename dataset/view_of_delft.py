@@ -158,6 +158,7 @@ class ViewOfDelft(Dataset):
             origin=(0.5, 0.5, 0))
         
         lidar_data = torch.tensor(lidar_data)
+        image_data = torch.tensor(vod_frame_data.image)
         
         return dict(
             lidar_data=lidar_data,
