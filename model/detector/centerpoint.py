@@ -24,7 +24,7 @@ from common_src.model.necks import SECONDFPN
 from common_src.model.heads import CenterHead
 
 
-class CenterPointBackbone(L.LightningModule):
+class CenterPoint(L.LightningModule):
     def __init__(self, config):
         super().__init__()
         self.save_hyperparameters()
