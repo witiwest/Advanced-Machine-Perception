@@ -100,12 +100,6 @@ class CenterPointPainting(L.LightningModule):
 
         painted_points = self.paint_points(pts_data, image_data, transforms)
 
-        # torch.save(painted_points[0].cpu(), "painted_points.pt")
-
-        # raise NotImplementedError(
-        #     "PointPainting runs through without crashing, time to visualize and make sure it's actually right"
-        # )
-
         voxel_dict = self.voxelize(painted_points)
 
         voxels = voxel_dict["voxels"]
