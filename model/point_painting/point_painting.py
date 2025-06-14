@@ -108,9 +108,9 @@ class PointPainting:
         if self.crop_point_cloud:
             painted_point_cloud = painted_point_cloud[painted_points_indices]
             # Remove "unknown" channel, since it only applies to points outside the image
-            painted_point_cloud = torch.cat(
-                [painted_point_cloud[:, :4], painted_point_cloud[:, 5:]], dim=1
-            )
+            # painted_point_cloud = torch.cat(
+            #     [painted_point_cloud[:, :4], painted_point_cloud[:, 5:]], dim=1
+            # )
 
         # Return painted point cloud
         return painted_point_cloud

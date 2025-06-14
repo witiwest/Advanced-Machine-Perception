@@ -14,7 +14,7 @@ pts_voxel_layer:
   max_voxels: [16000, 40000]
 
 point_painting:
-  crop_point_cloud: False 
+  crop_point_cloud: True
 
 voxel_encoder:
   in_channels: 9

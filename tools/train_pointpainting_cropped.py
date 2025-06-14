@@ -16,11 +16,19 @@ from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 
 import torch
 from torch.utils.data import DataLoader
-from common_src.model.detector import CenterPoint
+from common_src.model.detector import CenterPointPainting
 from common_src.dataset import ViewOfDelft, collate_vod_batch
 
+import torch.multiprocessing as mp
 
-@hydra.main(version_base=None, config_path="../config", config_name="train")
+mp.set_start_method("spawn", force=True)
+
+
+@hydra.main(
+    version_base=None,
+    config_path="../config",
+    config_name="train_pointpainting_cropped",
+)
 def train(cfg: DictConfig) -> None:
     L.seed_everything(cfg.seed, workers=True)
 
@@ -33,6 +41,7 @@ def train(cfg: DictConfig) -> None:
         num_workers=cfg.num_workers,
         shuffle=True,
         collate_fn=collate_vod_batch,
+        persistent_workers=True,
     )
     val_dataloader = DataLoader(
         val_dataset,
@@ -40,14 +49,16 @@ def train(cfg: DictConfig) -> None:
         num_workers=cfg.num_workers,
         shuffle=False,
         collate_fn=collate_vod_batch,
+        persistent_workers=True,
     )
-    model = CenterPoint(cfg.model)
+    model = CenterPointPainting(cfg.model)
     callbacks = [
         ModelCheckpoint(
             dirpath=osp.join(cfg.output_dir, "checkpoints"),
             filename="ep{epoch}-" + cfg.exp_id,
             save_last=True,
-            monitor="validation/entire_area/mAP",
+            # monitor="validation/entire_area/mAP",
+            monitor="validation/ROI/mAP",
             mode="max",
             auto_insert_metric_name=False,
             save_top_k=cfg.save_top_model,

@@ -19,12 +19,12 @@ import torch.distributed as dist
 from common_src.ops import Voxelization
 from common_src.model.voxel_encoders import PillarFeatureNet
 from common_src.model.middle_encoders import PointPillarsScatter
-from common_src.model.backbones import SECOND_baseline
+from common_src.model.backbones import SECOND
 from common_src.model.necks import SECONDFPN
 from common_src.model.heads import CenterHead
 
 
-class CenterPoint(L.LightningModule):
+class CenterPointBackbone(L.LightningModule):
     def __init__(self, config):
         super().__init__()
         self.save_hyperparameters()
@@ -45,7 +45,7 @@ class CenterPoint(L.LightningModule):
         self.voxel_layer = Voxelization(**voxel_layer_config)
         self.voxel_encoder = PillarFeatureNet(**voxel_encoder_config)
         self.middle_encoder = PointPillarsScatter(**middle_encoder_config)
-        self.backbone = SECOND_baseline(**backbone_config)
+        self.backbone = SECOND(**backbone_config)
         self.neck = SECONDFPN(**neck_config)
         self.head = CenterHead(**head_config)
 
@@ -163,6 +163,7 @@ class CenterPoint(L.LightningModule):
                 f"validation/{loss_name}", loss_value, batch_size=1, sync_dist=True
             )
         # task0.loss_heatmap', 'task0.loss_bbox', 'task1.loss_heatmap', 'task1.loss_bbox', 'task2.loss_heatmap', 'task2.loss_bbox', 'loss'
+
         # self.val_results_list.append(
         #     dict(
         #         sample_idx=batch["metas"][0]["num_frame"],
