@@ -19,7 +19,7 @@ import torch.distributed as dist
 from common_src.ops import Voxelization
 from common_src.model.voxel_encoders import PillarFeatureNet
 from common_src.model.middle_encoders import PointPillarsScatter
-from common_src.model.backbones import SECOND
+from common_src.model.backbones import SECOND_baseline
 from common_src.model.necks import SECONDFPN
 from common_src.model.heads import CenterHead
 from common_src.model.point_painting import PointPainting
@@ -47,7 +47,7 @@ class CenterPointPainting(L.LightningModule):
         self.voxel_layer = Voxelization(**voxel_layer_config)
         self.voxel_encoder = PillarFeatureNet(**voxel_encoder_config)
         self.middle_encoder = PointPillarsScatter(**middle_encoder_config)
-        self.backbone = SECOND(**backbone_config)
+        self.backbone = SECOND_baseline(**backbone_config)
         self.neck = SECONDFPN(**neck_config)
         self.head = CenterHead(**head_config)
 

@@ -19,51 +19,35 @@ from torch.utils.data import DataLoader
 from common_src.model.detector import CenterPoint
 from common_src.dataset import ViewOfDelft, collate_vod_batch
 
-from common_src.augment.augmentation import DataAugmenter
-
-from common_src.augment.augmentation import DataAugmenter
-
 
 @hydra.main(version_base=None, config_path="../config", config_name="train")
 def train(cfg: DictConfig) -> None:
     L.seed_everything(cfg.seed, workers=True)
 
-    augmentation_cfg = None
-    if cfg.get('augmentation') and cfg.augmentation.enabled:
-        augmentation_cfg = cfg.augmentation 
+    train_dataset = ViewOfDelft(data_root=cfg.data_root, split="train")
+    val_dataset = ViewOfDelft(data_root=cfg.data_root, split="val")
 
-        # Log the status of each individual augmentation type
-        if cfg.augmentation.copy_paste.enabled:
-            print("Copy-paste (Enabled)")
-        else:
-            print("Copy-paste (Disabled)")
-
-        if cfg.augmentation.global_transforms.enabled:
-            print("Global rotation & scaling (Enabled)")
-        else:
-            print("Global rotation & scaling (Disabled)")
-    
-    train_dataset = ViewOfDelft(data_root=cfg.data_root, split='train', augmentation_cfg=augmentation_cfg)
-    val_dataset = ViewOfDelft(data_root=cfg.data_root, split='val')
-    
-    train_dataloader = DataLoader(train_dataset, 
-                                  batch_size=cfg.batch_size, 
-                                  num_workers=cfg.num_workers, 
-                                  shuffle=True,
-                                  collate_fn=collate_vod_batch)
-    val_dataloader = DataLoader(val_dataset, 
-                                batch_size=1, 
-                                num_workers=cfg.num_workers, 
-                                shuffle=False,
-                                collate_fn=collate_vod_batch)
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=cfg.batch_size,
+        num_workers=cfg.num_workers,
+        shuffle=True,
+        collate_fn=collate_vod_batch,
+    )
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=1,
+        num_workers=cfg.num_workers,
+        shuffle=False,
+        collate_fn=collate_vod_batch,
+    )
     model = CenterPoint(cfg.model)
     callbacks = [
         ModelCheckpoint(
             dirpath=osp.join(cfg.output_dir, "checkpoints"),
             filename="ep{epoch}-" + cfg.exp_id,
             save_last=True,
-            # monitor='validation/entire_area/mAP',
-            monitor="validation/ROI/mAP",
+            monitor="validation/entire_area/mAP",
             mode="max",
             auto_insert_metric_name=False,
             save_top_k=cfg.save_top_model,
@@ -102,4 +86,3 @@ def train(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     train()
-

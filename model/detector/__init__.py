@@ -1,3 +1,4 @@
 from .centerpoint import CenterPoint
 from .centerpoint_pointpainting import CenterPointPainting
 from .centerpoint_combined import CenterPointCombined
+from .centerpoint_new_backbone import CenterPointBackbone
