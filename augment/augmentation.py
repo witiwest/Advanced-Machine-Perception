@@ -108,38 +108,6 @@ def build_voxel_hash(points, voxel_size):
 def get_voxel_key(point, voxel_size):
     return tuple(np.floor(point / voxel_size).astype(np.int32))
 
-# def build_depth_map(pc, n_az=360, n_el=64):
-#     xyz    = pc[:, :3]
-#     ranges = np.linalg.norm(xyz, axis=1)
-#     az     = np.arctan2(xyz[:,1], xyz[:,0])
-#     el     = np.arcsin(xyz[:,2] / ranges)
-
-#     az_b = np.clip(((az + np.pi) / (2*np.pi) * n_az).astype(int), 0, n_az-1)
-#     el_b = np.clip(((el + np.pi/2) / np.pi      * n_el).astype(int), 0, n_el-1)
-
-#     depth_map = np.full((n_az, n_el), np.inf, dtype=np.float32)
-#     for a, e, r in zip(az_b, el_b, ranges):
-#         if r < depth_map[a, e]:
-#             depth_map[a, e] = r
-
-#     return depth_map
-
-# def is_line_of_sight_clear_spherical(pc, obj_pts, depth_map, margin=0.25):
-#     clear_mask = []
-#     for pt in obj_pts:
-#         r = np.linalg.norm(pt)
-#         az = np.arctan2(pt[1], pt[0])
-#         el = np.arcsin(pt[2] / r)
-#         i  = int(((az + np.pi) / (2*np.pi) * depth_map.shape[0]))
-#         j  = int(((el + np.pi/2) / np.pi      * depth_map.shape[1]))
-#         i  = np.clip(i, 0, depth_map.shape[0]-1)
-#         j  = np.clip(j, 0, depth_map.shape[1]-1)
-
-#         clear_mask.append(r + margin < depth_map[i, j])
-
-#     return obj_pts[np.array(clear_mask)]
-
-
 def get_data_driven_sampler_pool(pc: np.ndarray, cls: str):
     """
     Filters the scene's point cloud to find all points that are likely on a
