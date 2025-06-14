@@ -163,14 +163,27 @@ class CenterPoint(L.LightningModule):
                 f"validation/{loss_name}", loss_value, batch_size=1, sync_dist=True
             )
         # task0.loss_heatmap', 'task0.loss_bbox', 'task1.loss_heatmap', 'task1.loss_bbox', 'task2.loss_heatmap', 'task2.loss_bbox', 'loss'
+        # self.val_results_list.append(
+        #     dict(
+        #         sample_idx=batch["metas"][0]["num_frame"],
+        #         input_batch=batch,
+        #         bbox_results=bbox_results,
+        #         losses=log_vars,
+        #     )
+        # )
+
+        # Less memory intense version of the above code, courtesy of Tobias Knell on the brightspace discussion forum:
         self.val_results_list.append(
             dict(
                 sample_idx=batch["metas"][0]["num_frame"],
-                input_batch=batch,
+                input_batch={
+                    "metas": batch["metas"],
+                },
                 bbox_results=bbox_results,
                 losses=log_vars,
             )
         )
+        torch.cuda.empty_cache()
 
     def on_validation_epoch_end(self):
         if (not self.save_results) or self.training:
